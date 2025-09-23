@@ -1,8 +1,6 @@
 import { redirect } from "next/navigation";
-
 import { createClient } from "@/lib/supabase/server";
-import { InfoIcon } from "lucide-react";
-import { FetchDataSteps } from "@/components/tutorial/fetch-data-steps";
+import Link from "next/link";
 
 export default async function ProtectedPage() {
   const supabase = await createClient();
@@ -14,22 +12,36 @@ export default async function ProtectedPage() {
 
   return (
     <div className="flex-1 w-full flex flex-col gap-12">
-      <div className="w-full">
-        <div className="bg-accent text-sm p-3 px-5 rounded-md text-foreground flex gap-3 items-center">
-          <InfoIcon size="16" strokeWidth={2} />
-          This is a protected page that you can only see as an authenticated
-          user
+      <div className="text-center">
+        <h1 className="text-3xl font-bold mb-4">Welcome to TennisGrids!</h1>
+        <p className="text-muted-foreground mb-8">
+          Ready to test your tennis knowledge with today's grid challenge?
+        </p>
+        
+        <div className="flex gap-4 justify-center">
+          <Link 
+            href="/game" 
+            className="bg-primary text-primary-foreground hover:bg-primary/90 px-6 py-3 rounded-md font-medium transition-colors"
+          >
+            Play Today's Grid
+          </Link>
+          <Link 
+            href="/stats" 
+            className="border border-input bg-background hover:bg-accent hover:text-accent-foreground px-6 py-3 rounded-md font-medium transition-colors"
+          >
+            View Stats
+          </Link>
         </div>
       </div>
-      <div className="flex flex-col gap-2 items-start">
-        <h2 className="font-bold text-2xl mb-4">Your user details</h2>
-        <pre className="text-xs font-mono p-3 rounded border max-h-32 overflow-auto">
-          {JSON.stringify(data.claims, null, 2)}
-        </pre>
-      </div>
-      <div>
-        <h2 className="font-bold text-2xl mb-4">Next steps</h2>
-        <FetchDataSteps />
+      
+      <div className="bg-muted/50 rounded-lg p-6">
+        <h2 className="font-semibold mb-2">How to Play</h2>
+        <ul className="text-sm text-muted-foreground space-y-1">
+          <li>• Find tennis players that match both the row and column criteria</li>
+          <li>• Each cell requires a player who satisfies both conditions</li>
+          <li>• Complete the 3x3 grid to finish today's challenge</li>
+          <li>• New puzzle available daily!</li>
+        </ul>
       </div>
     </div>
   );
