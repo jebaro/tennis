@@ -31,14 +31,20 @@ export default function AdminPage() {
     setMessage('');
     
     try {
-      const response = await fetch('/api/populate-db', { method: 'POST' });
+      const response = await fetch('/api/populate-from-sportradar', { method: 'POST' });
       const result = await response.json();
       
       if (result.success) {
-        setMessage(`✅ Success! Added ${result.playersCount} players and ${result.tournamentsCount} tournaments`);
+        setMessage(`✅ SportRadar Integration Complete! 
+        📊 Total processed: ${result.stats.totalProcessed}
+        ➕ New players added: ${result.stats.newPlayers}
+        🏆 Tournaments added: ${result.stats.tournamentsAdded}
+        ❌ Errors: ${result.stats.errors}`);
         await fetchStats(); // Refresh stats
       } else {
-        setMessage(`❌ Error: ${result.error}`);
+        setMessage(`❌ Error: ${result.error}
+        ${result.details ? `Details: ${result.details}` : ''}
+        ${result.hint ? `Hint: ${result.hint}` : ''}`);
       }
     } catch (error) {
       setMessage(`❌ Error: ${error}`);
@@ -101,15 +107,102 @@ export default function AdminPage() {
             <CardContent>
               <div className="space-y-4">
                 <Button 
+                  onClick={async () => {
+                    setMessage('Testing API connection...');
+                    try {
+                      const response = await fetch('/api/test-sportradar');
+                      const result = await response.json();
+                      
+                      if (result.success) {
+                        setMessage(`✅ API Test Successful! 
+                        Found ${result.sampleData.totalRankings} ranked players.
+                        Top 5: ${result.sampleData.topPlayers.map((p: any) => `${p.name} (${p.country})`).join(', ')}`);
+                      } else {
+                        setMessage(`❌ API Test Failed: ${result.error}`);
+                      }
+                    } catch (error) {
+                      setMessage(`❌ Test Error: ${error}`);
+                    }
+                  }}
+                  variant="outline"
+                  className="w-full mb-2"
+                >
+                  🧪 Test SportRadar API Connection
+                </Button>
+
+                <Button 
+                  onClick={async () => {
+                    setMessage('Debugging API response structure...');
+                    try {
+                      const response = await fetch('/api/debug-sportradar');
+                      const result = await response.json();
+                      
+                      if (result.success) {
+                        setMessage(`🔍 API Debug Results:
+                        Response Keys: ${result.debug.responseKeys.join(', ')}
+                        Has Rankings: ${result.debug.hasRankings}
+                        Rankings Length: ${result.debug.rankingsLength}
+                        First Player: ${result.debug.sampleRanking?.competitor?.name || 'None'}
+                        
+                        Full Structure: ${JSON.stringify(result.debug.fullStructure, null, 2).substring(0, 500)}...`);
+                      } else {
+                        setMessage(`❌ Debug Failed: ${result.error}`);
+                      }
+                    } catch (error) {
+                      setMessage(`❌ Debug Error: ${error}`);
+                    }
+                  }}
+                  variant="secondary"
+                  className="w-full mb-2"
+                >
+                  🔍 Debug API Response Structure
+                </Button>
+
+                <Button 
                   onClick={populateDatabase}
                   disabled={loading}
                   className="w-full"
                 >
-                  {loading ? 'Populating...' : 'Populate Database with Sample Data'}
+                  {loading ? 'Fetching from SportRadar...' : '🎾 Populate from SportRadar API'}
+                </Button>
+                
+                <Button 
+                  onClick={async () => {
+                    setLoading(true);
+                    setMessage('Adding achievements...');
+                    try {
+                      const response = await fetch('/api/expand-achievements', { method: 'POST' });
+                      const result = await response.json();
+                      
+                      if (result.success) {
+                        setMessage(`✅ Achievements Added! 
+                        🏆 Tournaments added: ${result.stats.tournamentsAdded}
+                        🏅 Achievements added: ${result.stats.achievementsAdded}
+                        ⚠️ Skipped: ${result.stats.achievementsSkipped}
+                        ❌ Errors: ${result.stats.errors}`);
+                        await fetchStats();
+                      } else {
+                        setMessage(`❌ Error: ${result.error}`);
+                      }
+                    } catch (error) {
+                      setMessage(`❌ Error: ${error}`);
+                    } finally {
+                      setLoading(false);
+                    }
+                  }}
+                  disabled={loading}
+                  variant="secondary" 
+                  className="w-full"
+                >
+                  {loading ? 'Adding Achievements...' : '🏅 Add Player Achievements'}
                 </Button>
                 
                 <p className="text-sm text-muted-foreground">
-                  This will add ~15 famous tennis players, 5 tournaments, and their Grand Slam achievements to get started.
+                  This will fetch ~200 top ATP players with current rankings, detailed profiles, and achievements from SportRadar's professional tennis database.
+                </p>
+                
+                <p className="text-xs text-orange-600 dark:text-orange-400">
+                  ⚠️ This makes ~250 API calls and may take 2-3 minutes due to rate limiting.
                 </p>
               </div>
             </CardContent>
