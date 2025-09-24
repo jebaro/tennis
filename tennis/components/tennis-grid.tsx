@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 // You'll need to create these components too, or use relative imports
 // import { GridCell } from "./grid-cell";
@@ -45,7 +45,7 @@ export function TennisGrid({ isLoggedIn }: TennisGridProps) {
     setActiveCell(cellKey);
   };
 
-  const handlePlayerSubmit = (playerName: string) => {
+  const handlePlayerSubmit = async (playerName: string) => {
     if (!activeCell) return;
 
     const normalizedName = playerName.toLowerCase().trim();
@@ -56,20 +56,52 @@ export function TennisGrid({ isLoggedIn }: TennisGridProps) {
       return;
     }
 
-    // For MVP, we'll accept any non-empty player name as correct
-    // Later we'll add validation against database
-    const isValid = playerName.trim().length > 0;
+    // Get the row and column categories for this cell
+    const [rowIndex, colIndex] = activeCell.split('-').map(Number);
+    const rowCategory = SAMPLE_CATEGORIES.rows[rowIndex].label;
+    const colCategory = SAMPLE_CATEGORIES.columns[colIndex].label;
 
-    setGridState(prev => ({
-      ...prev,
-      [activeCell]: {
-        player: playerName.trim(),
-        isCorrect: isValid
+    try {
+      // Validate with database
+      const response = await fetch('/api/validate-player', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          playerName: playerName.trim(),
+          rowCategory,
+          colCategory
+        })
+      });
+
+      const result = await response.json();
+
+      if (result.valid) {
+        // Player is valid for this cell
+        setGridState(prev => ({
+          ...prev,
+          [activeCell]: {
+            player: result.player.name, // Use the exact name from database
+            isCorrect: true
+          }
+        }));
+
+        setUsedPlayers(prev => new Set([...prev, result.player.name.toLowerCase()]));
+      } else {
+        // Player is invalid
+        setGridState(prev => ({
+          ...prev,
+          [activeCell]: {
+            player: playerName.trim(),
+            isCorrect: false
+          }
+        }));
+
+        // Show why it's invalid
+        alert(result.error || `${playerName} doesn't match the criteria for ${rowCategory} + ${colCategory}`);
       }
-    }));
-
-    if (isValid) {
-      setUsedPlayers(prev => new Set([...prev, normalizedName]));
+    } catch (error) {
+      console.error('Validation error:', error);
+      alert('Error validating player. Please try again.');
     }
 
     setActiveCell(null);
@@ -242,13 +274,48 @@ function GridCell({
   );
 }
 
-// Inline PlayerInput component for now  
+// Inline PlayerInput component with database search
 function PlayerInput({ onSubmit, onCancel, usedPlayers }: {
   onSubmit: (playerName: string) => void;
   onCancel: () => void;
   usedPlayers: string[];
 }) {
   const [inputValue, setInputValue] = useState("");
+  const [suggestions, setSuggestions] = useState<Array<{id: string, name: string, nationality: string}>>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  // Fetch suggestions from database
+  useEffect(() => {
+    const fetchSuggestions = async () => {
+      if (inputValue.length >= 2) {
+        setLoading(true);
+        try {
+          const response = await fetch(`/api/validate-player?q=${encodeURIComponent(inputValue)}`);
+          const data = await response.json();
+          
+          // Filter out already used players
+          const availablePlayers = data.players?.filter((player: any) => 
+            !usedPlayers.includes(player.name.toLowerCase())
+          ) || [];
+          
+          setSuggestions(availablePlayers);
+          setShowSuggestions(true);
+        } catch (error) {
+          console.error('Error fetching suggestions:', error);
+          setSuggestions([]);
+        } finally {
+          setLoading(false);
+        }
+      } else {
+        setSuggestions([]);
+        setShowSuggestions(false);
+      }
+    };
+
+    const debounceTimer = setTimeout(fetchSuggestions, 300);
+    return () => clearTimeout(debounceTimer);
+  }, [inputValue, usedPlayers]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -258,20 +325,74 @@ function PlayerInput({ onSubmit, onCancel, usedPlayers }: {
     }
   };
 
+  const handleSuggestionClick = (playerName: string) => {
+    onSubmit(playerName);
+    setInputValue("");
+  };
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md">
         <h3 className="text-lg font-semibold mb-4">Enter Tennis Player</h3>
         
         <form onSubmit={handleSubmit} className="space-y-4">
-          <input
-            type="text"
-            placeholder="Type player name..."
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700"
-            autoFocus
-          />
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="Type player name..."
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700"
+              autoFocus
+            />
+
+            {/* Loading indicator */}
+            {loading && (
+              <div className="absolute right-3 top-3">
+                <div className="animate-spin h-4 w-4 border-2 border-blue-600 rounded-full border-t-transparent"></div>
+              </div>
+            )}
+
+            {/* Autocomplete suggestions */}
+            {showSuggestions && suggestions.length > 0 && (
+              <div className="absolute top-full left-0 right-0 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md mt-1 max-h-60 overflow-y-auto z-10 shadow-lg">
+                {suggestions.map((player, index) => (
+                  <div
+                    key={player.id}
+                    className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-sm flex justify-between items-center"
+                    onClick={() => handleSuggestionClick(player.name)}
+                  >
+                    <span>{player.name}</span>
+                    <span className="text-xs text-gray-500">{player.nationality}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* No suggestions found */}
+            {showSuggestions && !loading && inputValue.length >= 2 && suggestions.length === 0 && (
+              <div className="absolute top-full left-0 right-0 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md mt-1 p-3 text-sm text-gray-500">
+                No players found. Try a different name.
+              </div>
+            )}
+          </div>
+
+          {/* Show used players warning */}
+          {usedPlayers.length > 0 && (
+            <div className="text-xs text-gray-500">
+              <div className="font-semibold mb-1">Already used:</div>
+              <div className="flex flex-wrap gap-1">
+                {usedPlayers.slice(-5).map((player, index) => (
+                  <span key={index} className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded text-xs">
+                    {player}
+                  </span>
+                ))}
+                {usedPlayers.length > 5 && (
+                  <span className="text-gray-400">+{usedPlayers.length - 5} more</span>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="flex gap-2">
             <button 
