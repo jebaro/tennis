@@ -38,8 +38,8 @@ export function LoginForm({
         password,
       });
       if (error) throw error;
-      // Update this route to redirect to an authenticated route. The user already has an active session.
-      router.push("/protected");
+      // Redirect to home page where the grid is, not to /protected
+      router.push("/");
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : "An error occurred");
     } finally {
@@ -53,7 +53,7 @@ export function LoginForm({
         <CardHeader>
           <CardTitle className="text-2xl">Login</CardTitle>
           <CardDescription>
-            Enter your email below to login to your account
+            Sign in to track your stats and progress
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -100,6 +100,14 @@ export function LoginForm({
                 className="underline underline-offset-4"
               >
                 Sign up
+              </Link>
+            </div>
+            <div className="mt-2 text-center">
+              <Link
+                href="/"
+                className="text-sm text-muted-foreground hover:text-foreground underline-offset-4 hover:underline"
+              >
+                ← Continue playing without account
               </Link>
             </div>
           </form>
