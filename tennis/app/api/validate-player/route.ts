@@ -1,4 +1,4 @@
-// app/api/validate-player/route.ts - ENHANCED VERSION
+// app/api/validate-player/route.ts - FIXED VERSION
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
@@ -43,7 +43,10 @@ export async function POST(request: NextRequest) {
       validatePlayerAgainstCategory(player, colCategory)
     ]);
 
-    const isValid = (rowValid === true) && (colValid === true);
+    // Convert null to false for boolean result
+    const isRowValid = rowValid === true;
+    const isColValid = colValid === true;
+    const isValid = isRowValid && isColValid;
 
     return NextResponse.json({
       valid: isValid,
@@ -53,8 +56,8 @@ export async function POST(request: NextRequest) {
         nationality: player.nationality
       },
       validation: {
-        rowCategory: { name: rowCategory.label, valid: rowValid },
-        colCategory: { name: colCategory.label, valid: colValid }
+        rowCategory: { name: rowCategory.label, valid: isRowValid },
+        colCategory: { name: colCategory.label, valid: isColValid }
       },
       error: !isValid ? `${player.name} doesn't match the criteria` : null
     });
@@ -96,43 +99,56 @@ export async function GET(request: NextRequest) {
 }
 
 // Enhanced validation function for all category types
-async function validatePlayerAgainstCategory(player: any, category: any): Promise<boolean | null> {
+async function validatePlayerAgainstCategory(player: any, category: any): Promise<boolean> {
   if (!category || !category.type) {
     return false;
   }
 
-  switch (category.type) {
-    case 'country':
-      return player.nationality === category.value;
-    
-    case 'tournament':
-      return await validateTournamentWinner(player.id, category.value);
-    
-    case 'era':
-      return validateEra(player, category.value);
-    
-    case 'style':
-      return player.plays_hand === category.value;
-    
-    case 'ranking':
-      return await validateRanking(player.id, category.value);
-    
-    default:
-      // Legacy support for simple string categories
-      return validateLegacyCategory(player, category);
+  try {
+    switch (category.type) {
+      case 'country':
+        return player.nationality === category.value;
+      
+      case 'tournament':
+        return await validateTournamentWinner(player.id, category.value);
+      
+      case 'era':
+        return validateEra(player, category.value);
+      
+      case 'style':
+        return player.plays_hand === category.value;
+      
+      case 'ranking':
+        return await validateRanking(player.id, category.value);
+      
+      case 'achievement':
+        return await validateAchievement(player.id, category.value);
+      
+      default:
+        // Legacy support for simple string categories
+        return validateLegacyCategory(player, category);
+    }
+  } catch (error) {
+    console.error('Category validation error:', error);
+    return false;
   }
 }
 
 // Validate if player won a specific tournament
 async function validateTournamentWinner(playerId: string, tournamentName: string): Promise<boolean> {
-  const { data: achievements, error } = await supabase
-    .from('player_achievements')
-    .select('result, tournaments!inner(short_name)')
-    .eq('player_id', playerId)
-    .eq('tournaments.short_name', tournamentName)
-    .eq('result', 'winner');
+  try {
+    const { data: achievements, error } = await supabase
+      .from('player_achievements')
+      .select('result, tournaments!inner(short_name)')
+      .eq('player_id', playerId)
+      .eq('tournaments.short_name', tournamentName)
+      .eq('result', 'winner');
 
-  return !error && achievements && achievements.length > 0;
+    return !error && achievements && achievements.length > 0;
+  } catch (error) {
+    console.error('Tournament validation error:', error);
+    return false;
+  }
 }
 
 // Validate era based on career years
@@ -161,38 +177,59 @@ function validateEra(player: any, era: string): boolean {
 
 // Validate ranking achievements
 async function validateRanking(playerId: string, rankingType: string): Promise<boolean> {
-  switch (rankingType) {
-    case 'world_no1':
-      // Check if player ever reached #1 (from rankings or achievements)
-      const { data: no1Rankings } = await supabase
-        .from('player_rankings')
-        .select('singles_ranking')
-        .eq('player_id', playerId)
-        .eq('singles_ranking', 1)
-        .limit(1);
-      
-      const { data: no1Achievements } = await supabase
-        .from('player_achievements')
-        .select('id, tournaments!inner(short_name)')
-        .eq('player_id', playerId)
-        .eq('tournaments.short_name', 'Year-End #1')
-        .limit(1);
+  try {
+    switch (rankingType) {
+      case 'world_no1':
+        // Check if player ever reached #1 (from rankings or achievements)
+        const { data: no1Rankings } = await supabase
+          .from('player_rankings')
+          .select('singles_ranking')
+          .eq('player_id', playerId)
+          .eq('singles_ranking', 1)
+          .limit(1);
+        
+        const { data: no1Achievements } = await supabase
+          .from('player_achievements')
+          .select('id, tournaments!inner(short_name)')
+          .eq('player_id', playerId)
+          .eq('tournaments.short_name', 'Year-End #1')
+          .limit(1);
 
-      return (no1Rankings && no1Rankings.length > 0) || (no1Achievements && no1Achievements.length > 0);
-    
-    case 'top10':
-      // Check if player ever reached top 10
-      const { data: top10Rankings } = await supabase
-        .from('player_rankings')
-        .select('singles_ranking')
-        .eq('player_id', playerId)
-        .lte('singles_ranking', 10)
-        .limit(1);
+        return (no1Rankings && no1Rankings.length > 0) || (no1Achievements && no1Achievements.length > 0);
       
-      return top10Rankings && top10Rankings.length > 0;
-    
-    default:
-      return false;
+      case 'top10':
+        // Check if player ever reached top 10
+        const { data: top10Rankings } = await supabase
+          .from('player_rankings')
+          .select('singles_ranking')
+          .eq('player_id', playerId)
+          .lte('singles_ranking', 10)
+          .limit(1);
+        
+        return top10Rankings && top10Rankings.length > 0;
+      
+      default:
+        return false;
+    }
+  } catch (error) {
+    console.error('Ranking validation error:', error);
+    return false;
+  }
+}
+
+// Validate specific achievements from database
+async function validateAchievement(playerId: string, achievementType: string): Promise<boolean> {
+  try {
+    const { data: achievements, error } = await supabase
+      .from('player_achievements')
+      .select('achievement_type')
+      .eq('player_id', playerId)
+      .eq('achievement_type', achievementType);
+
+    return !error && achievements && achievements.length > 0;
+  } catch (error) {
+    console.error('Achievement validation error:', error);
+    return false;
   }
 }
 

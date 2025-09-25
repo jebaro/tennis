@@ -1,4 +1,4 @@
-// app/api/daily-quiz/route.ts - COMPLETE FIXED VERSION
+// app/api/daily-quiz/route.ts - ENHANCED DB-DRIVEN VERSION
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
@@ -20,23 +20,39 @@ export async function GET(request: NextRequest) {
   try {
     // Get today's date as seed for consistent daily generation
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-    const dateNumber = parseInt(today.replace(/-/g, '')); // Convert to number for seeding
+    
+    // Check if this is a debug/test request
+    const { searchParams } = new URL(request.url);
+    const testMode = searchParams.get('t'); // Cache busting parameter
+    const debugMode = searchParams.get('debug'); // Debug mode
+    
+    // For testing, add some randomness to the seed while keeping it deterministic per day
+    let dateNumber = parseInt(today.replace(/-/g, '')); // Convert to number for seeding
+    if (testMode) {
+      // For debug/testing, use the timestamp to get different combinations
+      const timeVariation = Math.floor(parseInt(testMode) / 1000) % 50000; // Much bigger variation
+      dateNumber = dateNumber + timeVariation;
+      console.log(`Test mode: original seed ${parseInt(today.replace(/-/g, ''))}, variation ${timeVariation}, final seed ${dateNumber}`);
+    }
 
-    console.log(`Generating daily quiz for ${today}`);
+    console.log(`Generating daily quiz for ${today} (seed: ${dateNumber})`);
 
     // Generate deterministic "random" categories based on today's date
-    const quiz = await generateDailyCategories(dateNumber);
+    const quiz = await generateDailyCategories(dateNumber, !!debugMode);
 
     return NextResponse.json({
       success: true,
       date: today,
-      categories: quiz,
+      categories: quiz.categories,
+      seed: dateNumber,
+      debug: quiz.debug,
       message: `Daily quiz generated for ${today}`
     });
 
   } catch (error) {
     console.error('Daily quiz generation error:', error);
     return NextResponse.json({ 
+      success: false,
       error: 'Failed to generate daily quiz',
       details: error instanceof Error ? error.message : 'Unknown error'
     }, { status: 500 });
@@ -44,14 +60,20 @@ export async function GET(request: NextRequest) {
 }
 
 // Generate daily categories using database data
-async function generateDailyCategories(seed: number) {
+async function generateDailyCategories(seed: number, debug: boolean = false) {
   // Deterministic pseudo-random function using date as seed
   const pseudoRandom = (max: number, offset: number = 0) => {
-    return Math.abs(Math.sin(seed + offset) * 10000) % max;
+    const value = Math.abs(Math.sin((seed + offset) * 9999) * 10000) % max;
+    return Math.floor(value);
   };
 
-  // Get available data from database
-  const [countriesResult, tournamentsResult] = await Promise.all([
+  // Get available data from database - Enhanced to include grid_categories
+  const [
+    countriesResult, 
+    tournamentsResult, 
+    gridCategoriesResult,
+    achievementTypesResult
+  ] = await Promise.all([
     supabase
       .from('players')
       .select('nationality')
@@ -59,7 +81,15 @@ async function generateDailyCategories(seed: number) {
     supabase
       .from('tournaments')
       .select('short_name, name, level')
-      .not('level', 'eq', 'achievement')
+      .not('level', 'eq', 'achievement'),
+    supabase
+      .from('grid_categories')
+      .select('*')
+      .eq('active', true),
+    supabase
+      .from('player_achievements')
+      .select('achievement_type')
+      .not('achievement_type', 'is', null)
   ]);
 
   if (countriesResult.error || tournamentsResult.error) {
@@ -80,36 +110,85 @@ async function generateDailyCategories(seed: number) {
   // Get tournaments by level for variety
   const grandSlams = tournamentsResult.data?.filter(t => t.level === 'grand_slam') || [];
   const masters = tournamentsResult.data?.filter(t => t.level === 'atp_masters_1000') || [];
+  const atp500s = tournamentsResult.data?.filter(t => t.level === 'atp_500') || [];
 
-  // Define all possible category types
-  const allCategoryTypes: Category[] = [
-    // Country categories
-    ...viableCountries.map(country => ({
+  // Get unique achievement types
+  const uniqueAchievements = [...new Set(
+    achievementTypesResult.data?.map(a => a.achievement_type).filter(Boolean) || []
+  )];
+
+  // Build all possible category types dynamically
+  const allCategoryTypes: Category[] = [];
+
+  // 1. Add country categories
+  viableCountries.forEach(country => {
+    allCategoryTypes.push({
       type: 'country',
       id: `country_${country}`,
       label: getCountryName(country),
       description: `Tennis player from ${getCountryName(country)}`,
       value: country
-    })),
+    });
+  });
 
-    // Tournament winner categories
-    ...grandSlams.map(tournament => ({
+  // 2. Add tournament winner categories
+  grandSlams.forEach(tournament => {
+    allCategoryTypes.push({
       type: 'tournament',
       id: `winner_${tournament.short_name.toLowerCase().replace(/\s+/g, '_')}`,
       label: `${tournament.short_name} Winner`,
       description: `Won ${tournament.short_name}`,
       value: tournament.short_name
-    })),
+    });
+  });
 
-    ...masters.map(tournament => ({
+  masters.forEach(tournament => {
+    allCategoryTypes.push({
       type: 'tournament',
       id: `winner_${tournament.short_name.toLowerCase().replace(/\s+/g, '_')}`,
       label: `${tournament.short_name} Winner`,
       description: `Won ${tournament.short_name}`,
       value: tournament.short_name
-    })),
+    });
+  });
 
-    // Era categories
+  // Add some ATP 500 tournaments for more variety
+  atp500s.slice(0, 5).forEach(tournament => {
+    allCategoryTypes.push({
+      type: 'tournament',
+      id: `winner_${tournament.short_name.toLowerCase().replace(/\s+/g, '_')}`,
+      label: `${tournament.short_name} Winner`,
+      description: `Won ${tournament.short_name}`,
+      value: tournament.short_name
+    });
+  });
+
+  // 3. Add database-driven grid categories
+  if (gridCategoriesResult.data) {
+    gridCategoriesResult.data.forEach(category => {
+      allCategoryTypes.push({
+        type: category.category_type || 'custom',
+        id: `grid_${category.id}`,
+        label: category.name,
+        description: category.description || category.name,
+        value: category.validation_rule ? JSON.stringify(category.validation_rule) : category.name
+      });
+    });
+  }
+
+  // 4. Add achievement-based categories
+  uniqueAchievements.slice(0, 10).forEach(achievement => {
+    allCategoryTypes.push({
+      type: 'achievement',
+      id: `achievement_${achievement.toLowerCase().replace(/\s+/g, '_')}`,
+      label: formatAchievementLabel(achievement),
+      description: `Player with ${achievement} achievement`,
+      value: achievement
+    });
+  });
+
+  // 5. Add era categories (hardcoded but essential)
+  const eraCats = [
     {
       type: 'era',
       id: 'era_2020s',
@@ -130,9 +209,12 @@ async function generateDailyCategories(seed: number) {
       label: 'Active in 2000s',
       description: 'Played professionally in the 2000s',
       value: '2000s'
-    },
+    }
+  ];
+  allCategoryTypes.push(...eraCats);
 
-    // Playing style categories
+  // 6. Add style categories
+  const styleCats = [
     {
       type: 'style',
       id: 'lefthand',
@@ -140,15 +222,6 @@ async function generateDailyCategories(seed: number) {
       description: 'Left-handed tennis player',
       value: 'left'
     },
-    {
-      type: 'style',
-      id: 'righthand',
-      label: 'Right-Handed',
-      description: 'Right-handed tennis player',
-      value: 'right'
-    },
-
-    // Ranking categories
     {
       type: 'ranking',
       id: 'former_no1',
@@ -164,45 +237,91 @@ async function generateDailyCategories(seed: number) {
       value: 'top10'
     }
   ];
+  allCategoryTypes.push(...styleCats);
 
-  // Select 6 categories for 3x3 grid (3 rows + 3 columns)
-  // Ensure variety by picking from different types
+  // Enhanced selection algorithm with better variety
+  const categorySelection = selectDiverseCategories(allCategoryTypes, seed, 6);
+
+  // Split into rows and columns
+  const rows: Category[] = categorySelection.slice(0, 3);
+  const columns: Category[] = categorySelection.slice(3, 6);
+
+  const result = {
+    categories: { rows, columns },
+    debug: debug ? {
+      totalAvailableCategories: allCategoryTypes.length,
+      availableCountries: viableCountries.length,
+      availableGrandSlams: grandSlams.length,
+      availableMasters: masters.length,
+      availableGridCategories: gridCategoriesResult.data?.length || 0,
+      availableAchievements: uniqueAchievements.length,
+      selectedCategories: categorySelection.map(c => `${c.type}: ${c.label}`),
+      allCategories: allCategoryTypes.map(c => `${c.type}: ${c.label}`).slice(0, 20) // First 20 for debug
+    } : undefined
+  };
+
+  return result;
+}
+
+// Enhanced category selection with better diversity
+function selectDiverseCategories(allCategories: Category[], seed: number, count: number): Category[] {
+  // Group categories by type for balanced selection
+  const categoryGroups = allCategories.reduce((groups: { [key: string]: Category[] }, category) => {
+    if (!groups[category.type]) groups[category.type] = [];
+    groups[category.type].push(category);
+    return groups;
+  }, {});
+
   const selectedCategories: Category[] = [];
   const usedTypes = new Set<string>();
-
-  // First, ensure we have at least one of each major type
-  const priorityTypes = ['country', 'tournament', 'era'];
   
-  for (let i = 0; i < priorityTypes.length && selectedCategories.length < 6; i++) {
-    const type = priorityTypes[i];
-    const typeCategories = allCategoryTypes.filter(cat => cat.type === type);
-    if (typeCategories.length > 0) {
-      const index = Math.floor(pseudoRandom(typeCategories.length, i));
+  // Deterministic pseudo-random with better distribution
+  const getVariedIndex = (max: number, offset: number): number => {
+    const combined = seed * 12347 + offset * 9887; // Different primes for better variety
+    return Math.abs(combined) % max;
+  };
+
+  // Phase 1: Ensure variety by picking one from major types first
+  const priorityTypes = ['country', 'tournament', 'era', 'ranking'];
+  let selectionOffset = 0;
+
+  priorityTypes.forEach(type => {
+    if (categoryGroups[type] && categoryGroups[type].length > 0 && selectedCategories.length < count) {
+      const typeCategories = categoryGroups[type];
+      const index = getVariedIndex(typeCategories.length, selectionOffset++);
       selectedCategories.push(typeCategories[index]);
       usedTypes.add(type);
     }
-  }
+  });
 
-  // Fill remaining slots with variety
-  while (selectedCategories.length < 6) {
-    const availableCategories = allCategoryTypes.filter(cat => 
+  // Phase 2: Fill remaining slots with diverse selection
+  while (selectedCategories.length < count) {
+    // Get available categories not already selected
+    const availableCategories = allCategories.filter(cat => 
       !selectedCategories.some(selected => selected.id === cat.id)
     );
     
     if (availableCategories.length === 0) break;
     
-    const index = Math.floor(pseudoRandom(availableCategories.length, selectedCategories.length));
-    selectedCategories.push(availableCategories[index]);
+    // Prefer categories from types we haven't used yet
+    const unusedTypeCategories = availableCategories.filter(cat => !usedTypes.has(cat.type));
+    const selectionPool = unusedTypeCategories.length > 0 ? unusedTypeCategories : availableCategories;
+    
+    const index = getVariedIndex(selectionPool.length, selectionOffset++);
+    const selected = selectionPool[index];
+    selectedCategories.push(selected);
+    usedTypes.add(selected.type);
   }
 
-  // Split into rows and columns
-  const rows: Category[] = selectedCategories.slice(0, 3);
-  const columns: Category[] = selectedCategories.slice(3, 6);
+  return selectedCategories;
+}
 
-  return {
-    rows,
-    columns
-  };
+// Helper function to format achievement labels
+function formatAchievementLabel(achievement: string): string {
+  return achievement
+    .split('_')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
 }
 
 // Helper function to convert country codes to readable names
@@ -232,7 +351,12 @@ function getCountryName(countryCode: string): string {
     'COL': 'Colombia',
     'CRO': 'Croatia',
     'DEN': 'Denmark',
-    'NED': 'Netherlands'
+    'NED': 'Netherlands',
+    'URU': 'Uruguay',
+    'MEX': 'Mexico',
+    'PER': 'Peru',
+    'ECU': 'Ecuador',
+    'VEN': 'Venezuela'
   };
   
   return countryNames[countryCode] || countryCode;

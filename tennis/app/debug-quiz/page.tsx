@@ -1,289 +1,348 @@
-// app/api/daily-quiz/route.ts - COMPLETE FIXED VERSION
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+// app/debug-quiz/page.tsx - FIXED VERSION
+"use client";
 
-// Define category type interface
-interface Category {
-  type: string;
+import { useState, useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { RefreshCw, Eye, EyeOff } from "lucide-react";
+
+type Category = {
   id: string;
+  type: string;
   label: string;
   description: string;
   value: string;
-}
+};
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+type DailyQuiz = {
+  rows: Category[];
+  columns: Category[];
+};
 
-export async function GET(request: NextRequest) {
-  try {
-    // Get today's date as seed for consistent daily generation
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-    
-    // Check if this is a debug/test request
-    const { searchParams } = new URL(request.url);
-    const testMode = searchParams.get('t'); // Cache busting parameter
-    const debugMode = searchParams.get('debug'); // Debug mode
-    
-    // For testing, add some randomness to the seed while keeping it deterministic per day
-    let dateNumber = parseInt(today.replace(/-/g, '')); // Convert to number for seeding
-    if (testMode) {
-      // For debug/testing, use the timestamp to get different combinations
-      const timeVariation = Math.floor(parseInt(testMode) / 1000) % 10000; // Much bigger variation
-      dateNumber = dateNumber + timeVariation;
-      console.log(`Test mode: original seed ${parseInt(today.replace(/-/g, ''))}, variation ${timeVariation}, final seed ${dateNumber}`);
-    }
-
-    console.log(`Generating daily quiz for ${today} (seed: ${dateNumber})`);
-
-    // Generate deterministic "random" categories based on today's date
-    const quiz = await generateDailyCategories(dateNumber);
-
-    return NextResponse.json({
-      success: true,
-      date: today,
-      categories: quiz,
-      seed: dateNumber,
-      message: `Daily quiz generated for ${today}`
-    });
-
-  } catch (error) {
-    console.error('Daily quiz generation error:', error);
-    return NextResponse.json({ 
-      success: false,
-      error: 'Failed to generate daily quiz',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    }, { status: 500 });
-  }
-}
-
-// Generate daily categories using database data
-async function generateDailyCategories(seed: number, debug: boolean = false) {
-  // Deterministic pseudo-random function using date as seed
-  const pseudoRandom = (max: number, offset: number = 0) => {
-    const value = Math.abs(Math.sin((seed + offset) * 9999) * 10000) % max;
-    return Math.floor(value);
+type QuizResponse = {
+  success: boolean;
+  date: string;
+  categories: DailyQuiz;
+  seed: number;
+  debug?: {
+    totalAvailableCategories: number;
+    availableCountries: number;
+    availableGrandSlams: number;
+    availableMasters: number;
+    availableGridCategories: number;
+    availableAchievements: number;
+    selectedCategories: string[];
+    allCategories: string[];
   };
+  message: string;
+};
 
-  // Get available data from database
-  const [countriesResult, tournamentsResult] = await Promise.all([
-    supabase
-      .from('players')
-      .select('nationality')
-      .not('nationality', 'is', null),
-    supabase
-      .from('tournaments')
-      .select('short_name, name, level')
-      .not('level', 'eq', 'achievement')
-  ]);
+export default function DebugQuizPage() {
+  const [quizData, setQuizData] = useState<QuizResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showDebugInfo, setShowDebugInfo] = useState(true);
+  const [refreshCount, setRefreshCount] = useState(0);
 
-  if (countriesResult.error || tournamentsResult.error) {
-    throw new Error('Failed to fetch quiz data from database');
-  }
+  // Load initial quiz
+  useEffect(() => {
+    fetchDebugQuiz();
+  }, []);
 
-  // Get unique countries with good representation
-  const countryCounts = countriesResult.data?.reduce((acc: any, player: any) => {
-    acc[player.nationality] = (acc[player.nationality] || 0) + 1;
-    return acc;
-  }, {});
-
-  // Filter countries with at least 5 players for viable quiz options
-  const viableCountries = Object.entries(countryCounts)
-    .filter(([_, count]) => (count as number) >= 5)
-    .map(([country, _]) => country);
-
-  // Get tournaments by level for variety
-  const grandSlams = tournamentsResult.data?.filter(t => t.level === 'grand_slam') || [];
-  const masters = tournamentsResult.data?.filter(t => t.level === 'atp_masters_1000') || [];
-
-  // Define all possible category types
-  const allCategoryTypes: Category[] = [
-    // Country categories
-    ...viableCountries.map(country => ({
-      type: 'country',
-      id: `country_${country}`,
-      label: getCountryName(country),
-      description: `Tennis player from ${getCountryName(country)}`,
-      value: country
-    })),
-
-    // Tournament winner categories
-    ...grandSlams.map(tournament => ({
-      type: 'tournament',
-      id: `winner_${tournament.short_name.toLowerCase().replace(/\s+/g, '_')}`,
-      label: `${tournament.short_name} Winner`,
-      description: `Won ${tournament.short_name}`,
-      value: tournament.short_name
-    })),
-
-    ...masters.map(tournament => ({
-      type: 'tournament',
-      id: `winner_${tournament.short_name.toLowerCase().replace(/\s+/g, '_')}`,
-      label: `${tournament.short_name} Winner`,
-      description: `Won ${tournament.short_name}`,
-      value: tournament.short_name
-    })),
-
-    // Era categories
-    {
-      type: 'era',
-      id: 'era_2020s',
-      label: 'Active in 2020s',
-      description: 'Played professionally in the 2020s',
-      value: '2020s'
-    },
-    {
-      type: 'era',
-      id: 'era_2010s',
-      label: 'Active in 2010s',
-      description: 'Played professionally in the 2010s',
-      value: '2010s'
-    },
-    {
-      type: 'era',
-      id: 'era_2000s',
-      label: 'Active in 2000s',
-      description: 'Played professionally in the 2000s',
-      value: '2000s'
-    },
-
-    // Playing style categories
-    {
-      type: 'style',
-      id: 'lefthand',
-      label: 'Left-Handed',
-      description: 'Left-handed tennis player',
-      value: 'left'
-    },
-    {
-      type: 'style',
-      id: 'righthand',
-      label: 'Right-Handed',
-      description: 'Right-handed tennis player',
-      value: 'right'
-    },
-
-    // Ranking categories
-    {
-      type: 'ranking',
-      id: 'former_no1',
-      label: 'Former World #1',
-      description: 'Reached #1 in ATP/WTA rankings',
-      value: 'world_no1'
-    },
-    {
-      type: 'ranking',
-      id: 'top10',
-      label: 'Former Top 10',
-      description: 'Reached top 10 in rankings',
-      value: 'top10'
-    }
-  ];
-
-  // Select 6 categories for 3x3 grid (3 rows + 3 columns)
-  // Ensure variety by picking from different types
-  const selectedCategories: Category[] = [];
-
-  // Much simpler approach: just use different offsets based on seed
-  const getVariedIndex = (max: number, offset: number): number => {
-    const combined = seed * 9973 + offset * 7919; // Large primes for better distribution
-    return Math.abs(combined) % max;
-  };
-
-  // Ensure we have enough categories
-  if (allCategoryTypes.length < 6) {
-    console.error('Not enough category types available:', allCategoryTypes.length);
-    throw new Error('Insufficient categories for quiz generation');
-  }
-
-  // Simple selection with better distribution
-  const selectedCategories: Category[] = [];
-  const usedIndices = new Set<number>();
-
-  // Select 6 unique categories using different offsets
-  for (let i = 0; i < 6; i++) {
-    let attempts = 0;
-    let index;
-    
-    do {
-      index = getVariedIndex(allCategoryTypes.length, i * 100 + attempts);
-      attempts++;
-    } while (usedIndices.has(index) && attempts < 50);
-    
-    if (attempts >= 50) {
-      // Fallback: just pick the next available
-      for (let j = 0; j < allCategoryTypes.length; j++) {
-        if (!usedIndices.has(j)) {
-          index = j;
-          break;
-        }
+  const fetchDebugQuiz = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // Use timestamp to ensure different results each time
+      const timestamp = Date.now();
+      const response = await fetch(`/api/daily-quiz?debug=true&t=${timestamp}`);
+      const data: QuizResponse = await response.json();
+      
+      if (data.success) {
+        setQuizData(data);
+        console.log('🎾 Debug Quiz Data:', data);
+      } else {
+        setError(data.message || 'Failed to load quiz');
       }
+    } catch (err) {
+      setError('Failed to fetch debug quiz');
+      console.error('Debug quiz error:', err);
+    } finally {
+      setLoading(false);
     }
-    
-    usedIndices.add(index);
-    selectedCategories.push(allCategoryTypes[index]);
-  }
-
-  console.log(`Selected categories with seed ${seed}:`, selectedCategories.map(c => c.label));
-
-  // Ensure we have exactly 6 categories
-  if (selectedCategories.length < 6) {
-    console.warn(`Only selected ${selectedCategories.length} categories, padding with remaining`);
-    for (let i = 0; i < allCategoryTypes.length && selectedCategories.length < 6; i++) {
-      if (!selectedCategories.some(selected => selected.id === allCategoryTypes[i].id)) {
-        selectedCategories.push(allCategoryTypes[i]);
-      }
-    }
-  }
-
-  // Split into rows and columns
-  const rows: Category[] = selectedCategories.slice(0, 3);
-  const columns: Category[] = selectedCategories.slice(3, 6);
-
-  const result = {
-    categories: { rows, columns },
-    debug: debug ? {
-      totalAvailableCategories: allCategoryTypes.length,
-      availableCountries: viableCountries.length,
-      availableGrandSlams: grandSlams.length,
-      availableMasters: masters.length,
-      selectedCategories: selectedCategories.map(c => `${c.type}: ${c.label}`)
-    } : undefined
   };
 
-  return result;
-}
-
-// Helper function to convert country codes to readable names
-function getCountryName(countryCode: string): string {
-  const countryNames: { [key: string]: string } = {
-    'USA': 'USA',
-    'ESP': 'Spain',
-    'SRB': 'Serbia',
-    'SUI': 'Switzerland',
-    'GBR': 'Great Britain',
-    'FRA': 'France',
-    'GER': 'Germany',
-    'ITA': 'Italy',
-    'AUS': 'Australia',
-    'RUS': 'Russia',
-    'ARG': 'Argentina',
-    'POL': 'Poland',
-    'CZE': 'Czech Republic',
-    'BEL': 'Belgium',
-    'GRE': 'Greece',
-    'NOR': 'Norway',
-    'CAN': 'Canada',
-    'JPN': 'Japan',
-    'CHN': 'China',
-    'BRA': 'Brazil',
-    'CHI': 'Chile',
-    'COL': 'Colombia',
-    'CRO': 'Croatia',
-    'DEN': 'Denmark',
-    'NED': 'Netherlands'
+  const handleRefresh = () => {
+    setRefreshCount(prev => prev + 1);
+    fetchDebugQuiz();
   };
-  
-  return countryNames[countryCode] || countryCode;
+
+  const toggleDebugInfo = () => {
+    setShowDebugInfo(!showDebugInfo);
+  };
+
+  if (loading && !quizData) {
+    return (
+      <div className="container mx-auto p-6">
+        <div className="flex items-center justify-center min-h-[400px]">
+          <div className="text-center">
+            <RefreshCw className="h-8 w-8 animate-spin mx-auto mb-4" />
+            <p>Loading debug quiz...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error && !quizData) {
+    return (
+      <div className="container mx-auto p-6">
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="pt-6">
+            <div className="text-center">
+              <p className="text-red-600 mb-4">Error: {error}</p>
+              <Button onClick={fetchDebugQuiz} variant="outline">
+                Try Again
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="container mx-auto p-6">
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold mb-2">🎾 Tennis Quiz Debugger</h1>
+        <p className="text-muted-foreground">
+          Test and debug the daily quiz generation system
+        </p>
+      </div>
+
+      {/* Controls */}
+      <div className="flex gap-3 mb-6">
+        <Button 
+          onClick={handleRefresh} 
+          disabled={loading}
+          className="gap-2"
+        >
+          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+          Generate New Quiz
+        </Button>
+        
+        <Button 
+          onClick={toggleDebugInfo} 
+          variant="outline"
+          className="gap-2"
+        >
+          {showDebugInfo ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          {showDebugInfo ? 'Hide' : 'Show'} Debug Info
+        </Button>
+        
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span>Refreshes: {refreshCount}</span>
+          {quizData && <Badge variant="outline">Seed: {quizData.seed}</Badge>}
+        </div>
+      </div>
+
+      {quizData && (
+        <>
+          {/* Debug Information */}
+          {showDebugInfo && quizData.debug && (
+            <Card className="mb-6">
+              <CardHeader>
+                <CardTitle className="text-lg">🔍 Debug Information</CardTitle>
+                <CardDescription>
+                  Generated on {quizData.date} with seed {quizData.seed}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-blue-600">
+                      {quizData.debug.totalAvailableCategories}
+                    </div>
+                    <div className="text-sm text-muted-foreground">Total Categories</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-green-600">
+                      {quizData.debug.availableCountries}
+                    </div>
+                    <div className="text-sm text-muted-foreground">Countries</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-purple-600">
+                      {quizData.debug.availableGrandSlams}
+                    </div>
+                    <div className="text-sm text-muted-foreground">Grand Slams</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-orange-600">
+                      {quizData.debug.availableGridCategories || 0}
+                    </div>
+                    <div className="text-sm text-muted-foreground">DB Categories</div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <h4 className="font-semibold mb-2">Selected Categories (6):</h4>
+                    <div className="flex flex-wrap gap-2">
+                      {quizData.debug.selectedCategories.map((cat, index) => (
+                        <Badge key={index} variant="secondary">
+                          {cat}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+
+                  {quizData.debug.allCategories && (
+                    <div>
+                      <h4 className="font-semibold mb-2">Available Categories (first 20):</h4>
+                      <div className="flex flex-wrap gap-1 text-xs">
+                        {quizData.debug.allCategories.map((cat, index) => (
+                          <Badge key={index} variant="outline" className="text-xs">
+                            {cat}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Quiz Grid Preview */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-xl">🎯 Generated Quiz Grid</CardTitle>
+              <CardDescription>
+                This is how the quiz will appear to users
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-4 gap-3">
+                {/* Empty top-left corner */}
+                <div className="aspect-square"></div>
+                
+                {/* Column headers */}
+                {quizData.categories.columns.map((category, index) => (
+                  <div
+                    key={`col-${index}`}
+                    className="aspect-square bg-blue-100 dark:bg-blue-900 border-2 border-blue-300 dark:border-blue-700 rounded-lg flex flex-col items-center justify-center p-2 text-center"
+                  >
+                    <div className="font-semibold text-sm">{category.label}</div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      {category.description}
+                    </div>
+                    <Badge variant="outline" className="mt-1 text-xs">
+                      {category.type}
+                    </Badge>
+                  </div>
+                ))}
+
+                {/* Grid rows */}
+                {quizData.categories.rows.map((rowCategory, rowIndex) => (
+                  <div key={`row-${rowIndex}`} className="contents">
+                    {/* Row header */}
+                    <div className="aspect-square bg-green-100 dark:bg-green-900 border-2 border-green-300 dark:border-green-700 rounded-lg flex flex-col items-center justify-center p-2 text-center">
+                      <div className="font-semibold text-sm">{rowCategory.label}</div>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        {rowCategory.description}
+                      </div>
+                      <Badge variant="outline" className="mt-1 text-xs">
+                        {rowCategory.type}
+                      </Badge>
+                    </div>
+                    
+                    {/* Grid cells */}
+                    {quizData.categories.columns.map((colCategory, colIndex) => (
+                      <div
+                        key={`cell-${rowIndex}-${colIndex}`}
+                        className="aspect-square bg-gray-50 dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-600 rounded-lg flex flex-col items-center justify-center p-2 text-center hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors cursor-pointer"
+                      >
+                        <div className="text-xs text-muted-foreground mb-1">
+                          {rowCategory.type} + {colCategory.type}
+                        </div>
+                        <div className="text-sm font-medium">
+                          Click to guess
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Category Details */}
+          <div className="grid md:grid-cols-2 gap-6 mt-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">📊 Row Categories</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {quizData.categories.rows.map((category, index) => (
+                    <div key={index} className="flex items-start gap-3 p-3 bg-green-50 dark:bg-green-900/20 rounded-lg">
+                      <Badge variant="secondary">{category.type}</Badge>
+                      <div className="flex-1">
+                        <div className="font-medium">{category.label}</div>
+                        <div className="text-sm text-muted-foreground">{category.description}</div>
+                        <div className="text-xs text-muted-foreground mt-1">
+                          Value: {category.value}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">📈 Column Categories</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {quizData.categories.columns.map((category, index) => (
+                    <div key={index} className="flex items-start gap-3 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                      <Badge variant="secondary">{category.type}</Badge>
+                      <div className="flex-1">
+                        <div className="font-medium">{category.label}</div>
+                        <div className="text-sm text-muted-foreground">{category.description}</div>
+                        <div className="text-xs text-muted-foreground mt-1">
+                          Value: {category.value}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Instructions */}
+          <Card className="mt-6">
+            <CardHeader>
+              <CardTitle className="text-lg">💡 Testing Instructions</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2 text-sm">
+                <p>• <strong>Refresh:</strong> Click "Generate New Quiz" to create different category combinations</p>
+                <p>• <strong>Seed:</strong> Each refresh uses a different timestamp-based seed for variety</p>
+                <p>• <strong>Categories:</strong> The system pulls from your database: countries, tournaments, grid_categories, and achievements</p>
+                <p>• <strong>Validation:</strong> Each cell requires a player that matches both the row and column criteria</p>
+                <p>• <strong>Debug Mode:</strong> Shows all available data and selection logic for troubleshooting</p>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </div>
+  );
 }
