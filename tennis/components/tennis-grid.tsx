@@ -1,29 +1,23 @@
+// components/tennis-grid.tsx - DYNAMIC VERSION
 "use client";
 
 import { useState, useEffect } from "react";
-
-// You'll need to create these components too, or use relative imports
-// import { GridCell } from "./grid-cell";
-// import { PlayerInput } from "./player-input";
-
-// For now, let's include simplified versions inline until you create the separate files
 
 interface TennisGridProps {
   isLoggedIn: boolean;
 }
 
-// Sample categories for MVP - we'll make this dynamic later
-const SAMPLE_CATEGORIES = {
-  rows: [
-    { id: "grand_slam_winner", label: "Grand Slam Winner", description: "Won at least one Grand Slam" },
-    { id: "top_10", label: "Former World #1-10", description: "Reached top 10 in ATP/WTA rankings" },
-    { id: "2000s", label: "Active in 2000s", description: "Played professionally in the 2000s" }
-  ],
-  columns: [
-    { id: "usa", label: "USA", description: "American tennis player" },
-    { id: "clay_specialist", label: "Clay Court Specialist", description: "Known for clay court success" },
-    { id: "serve_volley", label: "Serve & Volley", description: "Known for serve and volley style" }
-  ]
+type Category = {
+  id: string;
+  type: string;
+  label: string;
+  description: string;
+  value: string;
+};
+
+type DailyQuiz = {
+  rows: Category[];
+  columns: Category[];
 };
 
 type GridState = {
@@ -34,9 +28,37 @@ type GridState = {
 };
 
 export function TennisGrid({ isLoggedIn }: TennisGridProps) {
+  const [dailyQuiz, setDailyQuiz] = useState<DailyQuiz | null>(null);
   const [gridState, setGridState] = useState<GridState>({});
   const [activeCell, setActiveCell] = useState<string | null>(null);
   const [usedPlayers, setUsedPlayers] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Fetch today's quiz on component mount
+  useEffect(() => {
+    fetchDailyQuiz();
+  }, []);
+
+  const fetchDailyQuiz = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch('/api/daily-quiz');
+      const data = await response.json();
+      
+      if (data.success) {
+        setDailyQuiz(data.categories);
+        setError(null);
+      } else {
+        setError('Failed to load daily quiz');
+      }
+    } catch (err) {
+      setError('Failed to load daily quiz');
+      console.error('Error fetching daily quiz:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const getCellKey = (rowIndex: number, colIndex: number) => `${rowIndex}-${colIndex}`;
 
@@ -46,7 +68,7 @@ export function TennisGrid({ isLoggedIn }: TennisGridProps) {
   };
 
   const handlePlayerSubmit = async (playerName: string) => {
-    if (!activeCell) return;
+    if (!activeCell || !dailyQuiz) return;
 
     const normalizedName = playerName.toLowerCase().trim();
     
@@ -58,8 +80,8 @@ export function TennisGrid({ isLoggedIn }: TennisGridProps) {
 
     // Get the row and column categories for this cell
     const [rowIndex, colIndex] = activeCell.split('-').map(Number);
-    const rowCategory = SAMPLE_CATEGORIES.rows[rowIndex].label;
-    const colCategory = SAMPLE_CATEGORIES.columns[colIndex].label;
+    const rowCategory = dailyQuiz.rows[rowIndex];
+    const colCategory = dailyQuiz.columns[colIndex];
 
     try {
       // Validate with database
@@ -97,7 +119,7 @@ export function TennisGrid({ isLoggedIn }: TennisGridProps) {
         }));
 
         // Show why it's invalid
-        alert(result.error || `${playerName} doesn't match the criteria for ${rowCategory} + ${colCategory}`);
+        alert(result.error || `${playerName} doesn't match the criteria for ${rowCategory.label} + ${colCategory.label}`);
       }
     } catch (error) {
       console.error('Validation error:', error);
@@ -111,10 +133,43 @@ export function TennisGrid({ isLoggedIn }: TennisGridProps) {
     setActiveCell(null);
   };
 
+  // Loading state
+  if (loading) {
+    return (
+      <div className="max-w-4xl mx-auto">
+        <div className="flex items-center justify-center min-h-[400px]">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+            <p className="text-muted-foreground">Loading today's quiz...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Error state
+  if (error || !dailyQuiz) {
+    return (
+      <div className="max-w-4xl mx-auto">
+        <div className="flex items-center justify-center min-h-[400px]">
+          <div className="text-center">
+            <p className="text-red-600 mb-4">⚠️ {error}</p>
+            <button 
+              onClick={fetchDailyQuiz}
+              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const completedCells = Object.values(gridState).filter(cell => cell.isCorrect).length;
   const isGameComplete = completedCells === 9;
 
-  // Handle game completion differently for logged-in vs anonymous users
+  // Handle game completion
   const handleGameComplete = () => {
     if (isLoggedIn) {
       // TODO: Save stats to database
@@ -125,23 +180,37 @@ export function TennisGrid({ isLoggedIn }: TennisGridProps) {
     }
   };
 
+  // Get today's date for display
+  const today = new Date().toLocaleDateString('en-US', { 
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  });
+
   return (
     <div className="max-w-4xl mx-auto">
-      {/* Game Status */}
+      {/* Daily Quiz Header */}
       <div className="mb-6 text-center">
+        <div className="text-sm text-muted-foreground mb-2">
+          Daily Challenge for {today}
+        </div>
         <div className="text-lg font-semibold">
           Progress: {completedCells}/9 cells completed
         </div>
         {isGameComplete && (
-          <div className="text-center space-y-3">
+          <div className="text-center space-y-3 mt-4">
             <div className="text-green-600 font-bold text-xl">
-              🎉 Congratulations! Grid completed!
+              🎉 Daily Challenge Complete!
+            </div>
+            <div className="text-sm text-muted-foreground">
+              Come back tomorrow for a new challenge!
             </div>
             {!isLoggedIn && (
               <div className="text-sm text-muted-foreground">
                 <a href="/auth/sign-up" className="text-blue-600 hover:underline font-medium">
                   Sign up
-                </a> to save your progress and track your stats!
+                </a> to track your daily streaks and stats!
               </div>
             )}
           </div>
@@ -154,7 +223,7 @@ export function TennisGrid({ isLoggedIn }: TennisGridProps) {
         <div className="aspect-square"></div>
         
         {/* Column headers */}
-        {SAMPLE_CATEGORIES.columns.map((category, index) => (
+        {dailyQuiz.columns.map((category, index) => (
           <div
             key={`col-${index}`}
             className="aspect-square bg-blue-100 dark:bg-blue-900 border-2 border-blue-300 dark:border-blue-700 rounded-lg flex flex-col items-center justify-center p-2 text-center"
@@ -167,7 +236,7 @@ export function TennisGrid({ isLoggedIn }: TennisGridProps) {
         ))}
 
         {/* Grid rows */}
-        {SAMPLE_CATEGORIES.rows.map((rowCategory, rowIndex) => (
+        {dailyQuiz.rows.map((rowCategory, rowIndex) => (
           <div key={`row-${rowIndex}`} className="contents">
             {/* Row header */}
             <div className="aspect-square bg-green-100 dark:bg-green-900 border-2 border-green-300 dark:border-green-700 rounded-lg flex flex-col items-center justify-center p-2 text-center">
@@ -178,7 +247,7 @@ export function TennisGrid({ isLoggedIn }: TennisGridProps) {
             </div>
             
             {/* Grid cells */}
-            {SAMPLE_CATEGORIES.columns.map((colCategory, colIndex) => {
+            {dailyQuiz.columns.map((colCategory, colIndex) => {
               const cellKey = getCellKey(rowIndex, colIndex);
               const cellData = gridState[cellKey];
               
@@ -210,7 +279,7 @@ export function TennisGrid({ isLoggedIn }: TennisGridProps) {
   );
 }
 
-// Inline GridCell component for now
+// GridCell component (same as before)
 function GridCell({ 
   rowCategory, 
   colCategory, 
@@ -274,7 +343,7 @@ function GridCell({
   );
 }
 
-// Inline PlayerInput component with database search
+// Enhanced PlayerInput with better search
 function PlayerInput({ onSubmit, onCancel, usedPlayers }: {
   onSubmit: (playerName: string) => void;
   onCancel: () => void;
@@ -322,95 +391,82 @@ function PlayerInput({ onSubmit, onCancel, usedPlayers }: {
     if (inputValue.trim()) {
       onSubmit(inputValue.trim());
       setInputValue("");
+      setShowSuggestions(false);
     }
   };
 
   const handleSuggestionClick = (playerName: string) => {
+    setInputValue(playerName);
+    setShowSuggestions(false);
     onSubmit(playerName);
     setInputValue("");
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md">
-        <h3 className="text-lg font-semibold mb-4">Enter Tennis Player</h3>
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md mx-4">
+        <h3 className="text-lg font-semibold mb-4">Enter Player Name</h3>
         
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="relative">
             <input
               type="text"
-              placeholder="Type player name..."
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700"
+              placeholder="Type player name..."
+              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700"
               autoFocus
             />
-
-            {/* Loading indicator */}
+            
             {loading && (
-              <div className="absolute right-3 top-3">
-                <div className="animate-spin h-4 w-4 border-2 border-blue-600 rounded-full border-t-transparent"></div>
+              <div className="absolute right-3 top-2.5">
+                <div className="animate-spin h-4 w-4 border-2 border-blue-600 border-t-transparent rounded-full"></div>
               </div>
             )}
-
-            {/* Autocomplete suggestions */}
+            
+            {/* Suggestions dropdown */}
             {showSuggestions && suggestions.length > 0 && (
-              <div className="absolute top-full left-0 right-0 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md mt-1 max-h-60 overflow-y-auto z-10 shadow-lg">
-                {suggestions.map((player, index) => (
-                  <div
+              <div className="absolute z-10 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                {suggestions.map((player) => (
+                  <button
                     key={player.id}
-                    className="px-3 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-sm flex justify-between items-center"
+                    type="button"
                     onClick={() => handleSuggestionClick(player.name)}
+                    className="w-full px-3 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center justify-between"
                   >
                     <span>{player.name}</span>
                     <span className="text-xs text-gray-500">{player.nationality}</span>
-                  </div>
+                  </button>
                 ))}
-              </div>
-            )}
-
-            {/* No suggestions found */}
-            {showSuggestions && !loading && inputValue.length >= 2 && suggestions.length === 0 && (
-              <div className="absolute top-full left-0 right-0 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-600 rounded-md mt-1 p-3 text-sm text-gray-500">
-                No players found. Try a different name.
               </div>
             )}
           </div>
-
-          {/* Show used players warning */}
-          {usedPlayers.length > 0 && (
-            <div className="text-xs text-gray-500">
-              <div className="font-semibold mb-1">Already used:</div>
-              <div className="flex flex-wrap gap-1">
-                {usedPlayers.slice(-5).map((player, index) => (
-                  <span key={index} className="bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded text-xs">
-                    {player}
-                  </span>
-                ))}
-                {usedPlayers.length > 5 && (
-                  <span className="text-gray-400">+{usedPlayers.length - 5} more</span>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="flex gap-2">
-            <button 
-              type="submit" 
+          
+          <div className="flex gap-3">
+            <button
+              type="submit"
               disabled={!inputValue.trim()}
-              className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-md disabled:opacity-50"
+              className="flex-1 bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
               Submit
             </button>
-            <button 
-              type="button" 
+            <button
+              type="button"
               onClick={onCancel}
-              className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md"
+              className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700"
             >
               Cancel
             </button>
           </div>
         </form>
+        
+        {usedPlayers.length > 0 && (
+          <div className="mt-4 text-xs text-gray-500">
+            <p>Used players: {usedPlayers.slice(0, 3).join(", ")}
+              {usedPlayers.length > 3 && ` +${usedPlayers.length - 3} more`}
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );
