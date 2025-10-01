@@ -1,363 +1,481 @@
-// app/api/daily-quiz/route.ts - ENHANCED DB-DRIVEN VERSION
+// app/api/daily-quiz/route.ts - COMPLETE REFACTORED VERSION
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { getServerSupabase, handleApiError } from '@/lib/supabase/api-client';
+import type { Category } from '@/lib/types';
 
-// Define category type interface
-interface Category {
-  type: string;
-  id: string;
-  label: string;
-  description: string;
-  value: string;
+interface DailyQuiz {
+  rows: Category[];
+  columns: Category[];
 }
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+const supabase = getServerSupabase();
 
 export async function GET(request: NextRequest) {
   try {
-    // Get today's date as seed for consistent daily generation
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-    
-    // Check if this is a debug/test request
+    const today = new Date().toISOString().split('T')[0];
     const { searchParams } = new URL(request.url);
-    const testMode = searchParams.get('t'); // Cache busting parameter
-    const debugMode = searchParams.get('debug'); // Debug mode
+    const testMode = searchParams.get('t');
+    const debugMode = searchParams.get('debug');
+    const skipValidation = searchParams.get('skipValidation') === 'true';
     
-    // For testing, add some randomness to the seed while keeping it deterministic per day
-    let dateNumber = parseInt(today.replace(/-/g, '')); // Convert to number for seeding
+    let dateNumber = parseInt(today.replace(/-/g, ''));
     if (testMode) {
-      // For debug/testing, use the timestamp to get different combinations
-      const timeVariation = Math.floor(parseInt(testMode) / 1000) % 50000; // Much bigger variation
+      const timeVariation = Math.floor(parseInt(testMode) / 1000) % 50000;
       dateNumber = dateNumber + timeVariation;
-      console.log(`Test mode: original seed ${parseInt(today.replace(/-/g, ''))}, variation ${timeVariation}, final seed ${dateNumber}`);
     }
 
-    console.log(`Generating daily quiz for ${today} (seed: ${dateNumber})`);
+    console.log(`\n🎾 Generating daily quiz for ${today} (base seed: ${dateNumber})`);
 
-    // Generate deterministic "random" categories based on today's date
-    const quiz = await generateDailyCategories(dateNumber, !!debugMode);
+    // Try up to 20 times to generate a valid quiz
+    let attempts = 0;
+    let quiz;
+    let isValid = false;
+
+    while (!isValid && attempts < 20) {
+      attempts++;
+      const currentSeed = dateNumber + (attempts - 1) * 7919;
+      
+      console.log(`\n🎲 Attempt ${attempts}/20 with seed ${currentSeed}`);
+      
+      quiz = await generateDailyCategories(currentSeed, !!debugMode);
+
+      if (skipValidation) {
+        isValid = true;
+        console.log('⚠️ Skipping validation (debug mode)');
+        break;
+      }
+
+      console.log(`🔍 Validating quiz...`);
+      const validationStart = Date.now();
+      
+      isValid = await validateQuizHasSolutions(quiz.categories);
+      
+      const validationTime = Date.now() - validationStart;
+      console.log(`⏱️ Validation took ${validationTime}ms`);
+      
+      if (!isValid) {
+        console.log(`❌ Attempt ${attempts} FAILED`);
+      } else {
+        console.log(`✅ Attempt ${attempts} SUCCESS!`);
+      }
+    }
+
+    if (!isValid) {
+      console.error('⚠️⚠️⚠️ FAILED after 20 attempts!');
+      return NextResponse.json({
+        success: true,
+        date: today,
+        categories: quiz!.categories,
+        seed: dateNumber,
+        debug: quiz!.debug,
+        message: `Quiz generated but may have impossible cells`,
+        warning: 'Validation failed after 20 attempts',
+        attempts: 20
+      });
+    }
+
+    console.log(`\n🎉 Valid quiz generated on attempt ${attempts}!`);
 
     return NextResponse.json({
       success: true,
       date: today,
-      categories: quiz.categories,
-      seed: dateNumber,
-      debug: quiz.debug,
+      categories: quiz!.categories,
+      seed: dateNumber + (attempts - 1) * 7919,
+      attempts,
+      debug: quiz!.debug,
       message: `Daily quiz generated for ${today}`
     });
 
   } catch (error) {
     console.error('Daily quiz generation error:', error);
-    return NextResponse.json({ 
-      success: false,
-      error: 'Failed to generate daily quiz',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    }, { status: 500 });
+    return NextResponse.json(
+      {
+        success: false,
+        ...handleApiError(error, 'Failed to generate daily quiz')
+      },
+      { status: 500 }
+    );
   }
 }
 
-// Generate daily categories using database data
 async function generateDailyCategories(seed: number, debug: boolean = false) {
-  // Deterministic pseudo-random function using date as seed
   const pseudoRandom = (max: number, offset: number = 0) => {
     const value = Math.abs(Math.sin((seed + offset) * 9999) * 10000) % max;
     return Math.floor(value);
   };
 
-  // Get available data from database - Enhanced to include grid_categories
-  const [
-    countriesResult, 
-    tournamentsResult, 
-    gridCategoriesResult,
-    achievementTypesResult
-  ] = await Promise.all([
-    supabase
-      .from('players')
-      .select('nationality')
-      .not('nationality', 'is', null),
-    supabase
-      .from('tournaments')
-      .select('short_name, name, level')
-      .not('level', 'eq', 'achievement'),
-    supabase
-      .from('grid_categories')
-      .select('*')
-      .eq('active', true),
-    supabase
-      .from('player_achievements')
-      .select('achievement_type')
-      .not('achievement_type', 'is', null)
+  // Fetch all data from database
+  const [countriesResult, tournamentsResult, achievementTypesResult] = await Promise.all([
+    supabase.from('players').select('nationality').not('nationality', 'is', null),
+    supabase.from('tournaments').select('short_name, name, level').not('level', 'eq', 'achievement'),
+    supabase.from('player_achievements').select('achievement_type').not('achievement_type', 'is', null)
   ]);
 
   if (countriesResult.error || tournamentsResult.error) {
-    throw new Error('Failed to fetch quiz data from database');
+    throw new Error('Failed to fetch quiz data');
   }
 
-  // Get unique countries with good representation
-  const countryCounts = countriesResult.data?.reduce((acc: any, player: any) => {
-    acc[player.nationality] = (acc[player.nationality] || 0) + 1;
+  // Count players per country
+  const countryCounts = countriesResult.data?.reduce((acc: Record<string, number>, p: any) => {
+    acc[p.nationality] = (acc[p.nationality] || 0) + 1;
     return acc;
-  }, {});
+  }, {}) || {};
 
-  // Filter countries with at least 5 players for viable quiz options
+  // CRITICAL: Lower threshold to 3 players (was 5)
   const viableCountries = Object.entries(countryCounts)
-    .filter(([_, count]) => (count as number) >= 5)
-    .map(([country, _]) => country);
+    .filter(([_, count]) => count >= 3)
+    .map(([country]) => country);
 
-  // Get tournaments by level for variety
+  // Get tournaments by level
   const grandSlams = tournamentsResult.data?.filter(t => t.level === 'grand_slam') || [];
   const masters = tournamentsResult.data?.filter(t => t.level === 'atp_masters_1000') || [];
   const atp500s = tournamentsResult.data?.filter(t => t.level === 'atp_500') || [];
 
-  // Get unique achievement types
+  // Get unique achievements
   const uniqueAchievements = [...new Set(
     achievementTypesResult.data?.map(a => a.achievement_type).filter(Boolean) || []
   )];
 
-  // Build all possible category types dynamically
-  const allCategoryTypes: Category[] = [];
+  console.log(`📊 Database stats: ${viableCountries.length} countries, ${grandSlams.length} slams, ${masters.length} masters, ${uniqueAchievements.length} achievements`);
 
-  // 1. Add country categories
+  // Build category pool
+  const allCategories: Category[] = [];
+
+  // 1. ALL viable countries
   viableCountries.forEach(country => {
-    allCategoryTypes.push({
+    allCategories.push({
       type: 'country',
       id: `country_${country}`,
       label: getCountryName(country),
-      description: `Tennis player from ${getCountryName(country)}`,
+      description: `From ${getCountryName(country)}`,
       value: country
     });
   });
 
-  // 2. Add tournament winner categories
-  grandSlams.forEach(tournament => {
-    allCategoryTypes.push({
+  // 2. Grand Slams
+  grandSlams.forEach(t => {
+    allCategories.push({
       type: 'tournament',
-      id: `winner_${tournament.short_name.toLowerCase().replace(/\s+/g, '_')}`,
-      label: `${tournament.short_name} Winner`,
-      description: `Won ${tournament.short_name}`,
-      value: tournament.short_name
+      id: `tournament_${t.short_name}`,
+      label: t.short_name,
+      description: `Won ${t.short_name}`,
+      value: t.short_name
     });
   });
 
-  masters.forEach(tournament => {
-    allCategoryTypes.push({
+  // 3. ALL Masters 1000
+  masters.forEach(t => {
+    allCategories.push({
       type: 'tournament',
-      id: `winner_${tournament.short_name.toLowerCase().replace(/\s+/g, '_')}`,
-      label: `${tournament.short_name} Winner`,
-      description: `Won ${tournament.short_name}`,
-      value: tournament.short_name
+      id: `tournament_${t.short_name}`,
+      label: t.short_name,
+      description: `Won ${t.short_name}`,
+      value: t.short_name
     });
   });
 
-  // Add some ATP 500 tournaments for more variety
-  atp500s.slice(0, 5).forEach(tournament => {
-    allCategoryTypes.push({
+  // 4. More ATP 500s (10 instead of 5)
+  atp500s.slice(0, 10).forEach(t => {
+    allCategories.push({
       type: 'tournament',
-      id: `winner_${tournament.short_name.toLowerCase().replace(/\s+/g, '_')}`,
-      label: `${tournament.short_name} Winner`,
-      description: `Won ${tournament.short_name}`,
-      value: tournament.short_name
+      id: `tournament_${t.short_name}`,
+      label: t.short_name,
+      description: `Won ${t.short_name}`,
+      value: t.short_name
     });
   });
 
-  // 3. Add database-driven grid categories
-  if (gridCategoriesResult.data) {
-    gridCategoriesResult.data.forEach(category => {
-      allCategoryTypes.push({
-        type: category.category_type || 'custom',
-        id: `grid_${category.id}`,
-        label: category.name,
-        description: category.description || category.name,
-        value: category.validation_rule ? JSON.stringify(category.validation_rule) : category.name
-      });
+  // 5. Eras (including 1990s)
+  const eras = [
+    { value: '2020s', label: '2020s', description: 'Active in 2020s' },
+    { value: '2010s', label: '2010s', description: 'Active in 2010s' },
+    { value: '2000s', label: '2000s', description: 'Active in 2000s' },
+    { value: '1990s', label: '1990s', description: 'Active in 1990s' },
+  ];
+  eras.forEach(era => {
+    allCategories.push({
+      type: 'era',
+      id: `era_${era.value}`,
+      label: era.label,
+      description: era.description,
+      value: era.value
     });
-  }
+  });
 
-  // 4. Add achievement-based categories
-  uniqueAchievements.slice(0, 10).forEach(achievement => {
-    allCategoryTypes.push({
+  // 6. Playing styles
+  [
+    { value: 'left', label: 'Left-Handed', description: 'Plays left-handed' },
+    { value: 'right', label: 'Right-Handed', description: 'Plays right-handed' },
+  ].forEach(style => {
+    allCategories.push({
+      type: 'style',
+      id: `style_${style.value}`,
+      label: style.label,
+      description: style.description,
+      value: style.value
+    });
+  });
+
+  // 7. Rankings (CRITICAL - these were missing!)
+  [
+    { value: 'world_no1', label: 'World #1', description: 'Former World #1' },
+    { value: 'top10', label: 'Top 10', description: 'Reached Top 10' },
+  ].forEach(ranking => {
+    allCategories.push({
+      type: 'ranking',
+      id: `ranking_${ranking.value}`,
+      label: ranking.label,
+      description: ranking.description,
+      value: ranking.value
+    });
+  });
+
+  // 8. More achievements (20 instead of 10)
+  uniqueAchievements.slice(0, 20).forEach(achievement => {
+    allCategories.push({
       type: 'achievement',
-      id: `achievement_${achievement.toLowerCase().replace(/\s+/g, '_')}`,
+      id: `achievement_${achievement}`,
       label: formatAchievementLabel(achievement),
-      description: `Player with ${achievement} achievement`,
+      description: formatAchievementLabel(achievement),
       value: achievement
     });
   });
 
-  // 5. Add era categories (hardcoded but essential)
-  const eraCats = [
-    {
-      type: 'era',
-      id: 'era_2020s',
-      label: 'Active in 2020s',
-      description: 'Played professionally in the 2020s',
-      value: '2020s'
-    },
-    {
-      type: 'era',
-      id: 'era_2010s',
-      label: 'Active in 2010s',
-      description: 'Played professionally in the 2010s',
-      value: '2010s'
-    },
-    {
-      type: 'era',
-      id: 'era_2000s',
-      label: 'Active in 2000s',
-      description: 'Played professionally in the 2000s',
-      value: '2000s'
-    }
-  ];
-  allCategoryTypes.push(...eraCats);
+  console.log(`📦 Total category pool: ${allCategories.length} categories`);
 
-  // 6. Add style categories
-  const styleCats = [
-    {
-      type: 'style',
-      id: 'lefthand',
-      label: 'Left-Handed',
-      description: 'Left-handed tennis player',
-      value: 'left'
+  // Smart selection to avoid impossible combinations
+  const selected = selectSmartCategories(allCategories, seed, debug);
+
+  return {
+    categories: {
+      rows: selected.slice(0, 3),
+      columns: selected.slice(3, 6)
     },
-    {
-      type: 'ranking',
-      id: 'former_no1',
-      label: 'Former World #1',
-      description: 'Reached #1 in ATP/WTA rankings',
-      value: 'world_no1'
-    },
-    {
-      type: 'ranking',
-      id: 'top10',
-      label: 'Former Top 10',
-      description: 'Reached top 10 in rankings',
-      value: 'top10'
-    }
-  ];
-  allCategoryTypes.push(...styleCats);
-
-  // Enhanced selection algorithm with better variety
-  const categorySelection = selectDiverseCategories(allCategoryTypes, seed, 6);
-
-  // Split into rows and columns
-  const rows: Category[] = categorySelection.slice(0, 3);
-  const columns: Category[] = categorySelection.slice(3, 6);
-
-  const result = {
-    categories: { rows, columns },
     debug: debug ? {
-      totalAvailableCategories: allCategoryTypes.length,
-      availableCountries: viableCountries.length,
-      availableGrandSlams: grandSlams.length,
-      availableMasters: masters.length,
-      availableGridCategories: gridCategoriesResult.data?.length || 0,
-      availableAchievements: uniqueAchievements.length,
-      selectedCategories: categorySelection.map(c => `${c.type}: ${c.label}`),
-      allCategories: allCategoryTypes.map(c => `${c.type}: ${c.label}`).slice(0, 20) // First 20 for debug
+      totalCategories: allCategories.length,
+      categoryBreakdown: {
+        countries: viableCountries.length,
+        grandSlams: grandSlams.length,
+        masters: masters.length,
+        achievements: uniqueAchievements.length
+      },
+      selectedRows: selected.slice(0, 3).map(c => `${c.type}: ${c.label}`),
+      selectedColumns: selected.slice(3, 6).map(c => `${c.type}: ${c.label}`)
     } : undefined
   };
-
-  return result;
 }
 
-// Enhanced category selection with better diversity
-function selectDiverseCategories(allCategories: Category[], seed: number, count: number): Category[] {
-  // Group categories by type for balanced selection
-  const categoryGroups = allCategories.reduce((groups: { [key: string]: Category[] }, category) => {
-    if (!groups[category.type]) groups[category.type] = [];
-    groups[category.type].push(category);
-    return groups;
-  }, {});
-
-  const selectedCategories: Category[] = [];
-  const usedTypes = new Set<string>();
-  
-  // Deterministic pseudo-random with better distribution
-  const getVariedIndex = (max: number, offset: number): number => {
-    const combined = seed * 12347 + offset * 9887; // Different primes for better variety
-    return Math.abs(combined) % max;
+function selectSmartCategories(allCategories: Category[], seed: number, debug: boolean): Category[] {
+  const pseudoRandom = (max: number, offset: number = 0) => {
+    const value = Math.abs(Math.sin((seed + offset) * 9999) * 10000) % max;
+    return Math.floor(value);
   };
 
-  // Phase 1: Ensure variety by picking one from major types first
-  const priorityTypes = ['country', 'tournament', 'era', 'ranking'];
-  let selectionOffset = 0;
-
-  priorityTypes.forEach(type => {
-    if (categoryGroups[type] && categoryGroups[type].length > 0 && selectedCategories.length < count) {
-      const typeCategories = categoryGroups[type];
-      const index = getVariedIndex(typeCategories.length, selectionOffset++);
-      selectedCategories.push(typeCategories[index]);
-      usedTypes.add(type);
-    }
+  // Define safe (popular) vs risky (rare) categories
+  const popularCountries = ['USA', 'ESP', 'SRB', 'SUI', 'GBR', 'FRA', 'GER', 'AUS', 'ARG', 'RUS', 'ITA', 'CRO'];
+  
+  const safeCategories = allCategories.filter(c => {
+    if (c.type === 'country') return popularCountries.includes(c.value);
+    if (c.type === 'tournament') return c.label.includes('Wimbledon') || c.label.includes('US Open') || c.label.includes('French Open') || c.label.includes('Australian Open');
+    if (c.type === 'era') return true;
+    if (c.type === 'ranking') return true;
+    return false;
   });
 
-  // Phase 2: Fill remaining slots with diverse selection
-  while (selectedCategories.length < count) {
-    // Get available categories not already selected
-    const availableCategories = allCategories.filter(cat => 
-      !selectedCategories.some(selected => selected.id === cat.id)
-    );
+  const riskyCategories = allCategories.filter(c => !safeCategories.includes(c));
+
+  console.log(`🎯 Category pools: ${safeCategories.length} safe, ${riskyCategories.length} risky`);
+
+  const selected: Category[] = [];
+  const usedIds = new Set<string>();
+  const rowHasCountry = { value: false };
+  const colHasCountry = { value: false };
+
+  // Select 3 ROWS
+  for (let i = 0; i < 3; i++) {
+    let pool = (i < 2) ? safeCategories : [...safeCategories, ...riskyCategories];
     
-    if (availableCategories.length === 0) break;
+    // CRITICAL RULE: Can't have 2+ countries in same axis
+    // (One player can't be from 2 countries!)
+    pool = pool.filter(c => {
+      if (usedIds.has(c.id)) return false;
+      if (c.type === 'country' && rowHasCountry.value) return false;
+      return true;
+    });
+
+    if (pool.length === 0) {
+      console.warn(`⚠️ No valid categories for row ${i + 1}, using fallback`);
+      pool = allCategories.filter(c => !usedIds.has(c.id) && !(c.type === 'country' && rowHasCountry.value));
+    }
     
-    // Prefer categories from types we haven't used yet
-    const unusedTypeCategories = availableCategories.filter(cat => !usedTypes.has(cat.type));
-    const selectionPool = unusedTypeCategories.length > 0 ? unusedTypeCategories : availableCategories;
-    
-    const index = getVariedIndex(selectionPool.length, selectionOffset++);
-    const selected = selectionPool[index];
-    selectedCategories.push(selected);
-    usedTypes.add(selected.type);
+    let attempts = 0;
+    while (attempts < 100 && pool.length > 0) {
+      const index = pseudoRandom(pool.length, i * 100 + attempts);
+      const candidate = pool[index];
+
+      if (!usedIds.has(candidate.id)) {
+        selected.push(candidate);
+        usedIds.add(candidate.id);
+        if (candidate.type === 'country') rowHasCountry.value = true;
+        console.log(`  Row ${i + 1}: ${candidate.type} - ${candidate.label}`);
+        break;
+      }
+      attempts++;
+    }
   }
 
-  return selectedCategories;
+  // Select 3 COLUMNS
+  for (let i = 0; i < 3; i++) {
+    let pool = (i < 2) ? safeCategories : [...safeCategories, ...riskyCategories];
+    
+    // CRITICAL RULE: Can't have 2+ countries in same axis
+    pool = pool.filter(c => {
+      if (usedIds.has(c.id)) return false;
+      if (c.type === 'country' && colHasCountry.value) return false;
+      return true;
+    });
+
+    if (pool.length === 0) {
+      console.warn(`⚠️ No valid categories for column ${i + 1}, using fallback`);
+      pool = allCategories.filter(c => !usedIds.has(c.id) && !(c.type === 'country' && colHasCountry.value));
+    }
+    
+    let attempts = 0;
+    while (attempts < 100 && pool.length > 0) {
+      const index = pseudoRandom(pool.length, (i + 3) * 100 + attempts);
+      const candidate = pool[index];
+
+      if (!usedIds.has(candidate.id)) {
+        selected.push(candidate);
+        usedIds.add(candidate.id);
+        if (candidate.type === 'country') colHasCountry.value = true;
+        console.log(`  Col ${i + 1}: ${candidate.type} - ${candidate.label}`);
+        break;
+      }
+      attempts++;
+    }
+  }
+
+  if (debug) {
+    console.log(`🎲 Final selection: ${selected.map(c => `${c.type}:${c.label}`).join(', ')}`);
+    console.log(`   Rows have country: ${rowHasCountry.value}, Cols have country: ${colHasCountry.value}`);
+  }
+
+  return selected;
 }
 
-// Helper function to format achievement labels
-function formatAchievementLabel(achievement: string): string {
-  return achievement
-    .split('_')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join(' ');
-}
-
-// Helper function to convert country codes to readable names
-function getCountryName(countryCode: string): string {
-  const countryNames: { [key: string]: string } = {
-    'USA': 'USA',
-    'ESP': 'Spain',
-    'SRB': 'Serbia',
-    'SUI': 'Switzerland',
-    'GBR': 'Great Britain',
-    'FRA': 'France',
-    'GER': 'Germany',
-    'ITA': 'Italy',
-    'AUS': 'Australia',
-    'RUS': 'Russia',
-    'ARG': 'Argentina',
-    'POL': 'Poland',
-    'CZE': 'Czech Republic',
-    'BEL': 'Belgium',
-    'GRE': 'Greece',
-    'NOR': 'Norway',
-    'CAN': 'Canada',
-    'JPN': 'Japan',
-    'CHN': 'China',
-    'BRA': 'Brazil',
-    'CHI': 'Chile',
-    'COL': 'Colombia',
-    'CRO': 'Croatia',
-    'DEN': 'Denmark',
-    'NED': 'Netherlands',
-    'URU': 'Uruguay',
-    'MEX': 'Mexico',
-    'PER': 'Peru',
-    'ECU': 'Ecuador',
-    'VEN': 'Venezuela'
-  };
+async function validateQuizHasSolutions(categories: DailyQuiz): Promise<boolean> {
+  const cellChecks: Promise<{ row: number; col: number; hasPlayers: boolean }>[] = [];
   
-  return countryNames[countryCode] || countryCode;
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 3; col++) {
+      cellChecks.push(
+        checkCellHasSolution(categories.rows[row], categories.columns[col]).then(hasPlayers => ({
+          row, col, hasPlayers
+        }))
+      );
+    }
+  }
+  
+  const results = await Promise.all(cellChecks);
+  const impossible = results.filter(r => !r.hasPlayers);
+  
+  if (impossible.length > 0) {
+    console.log(`❌ ${impossible.length} impossible cells found`);
+    impossible.forEach(cell => {
+      console.log(`   [${cell.row},${cell.col}]: ${categories.rows[cell.row].label} + ${categories.columns[cell.col].label}`);
+    });
+    return false;
+  }
+  
+  return true;
+}
+
+async function checkCellHasSolution(rowCategory: Category, colCategory: Category): Promise<boolean> {
+  try {
+    const { data: players, error } = await supabase
+      .from('players')
+      .select(`
+        id, name, nationality, turned_pro, retired, plays_hand,
+        player_achievements(id, tournament_id, year, result, achievement_type, tournaments(short_name)),
+        player_rankings(singles_ranking)
+      `)
+      .limit(200);
+
+    if (error || !players) return true; // Fail open
+
+    for (const player of players) {
+      const rowMatch = await validateCategory(player, rowCategory);
+      const colMatch = await validateCategory(player, colCategory);
+      if (rowMatch && colMatch) return true;
+    }
+
+    return false;
+  } catch {
+    return true; // Fail open
+  }
+}
+
+async function validateCategory(player: any, category: Category): Promise<boolean> {
+  try {
+    switch (category.type) {
+      case 'country':
+        return player.nationality === category.value;
+      
+      case 'tournament':
+        return player.player_achievements?.some((a: any) => 
+          a.tournaments?.short_name === category.value && a.result === 'winner'
+        ) || false;
+      
+      case 'era':
+        return validateEra(player, category.value);
+      
+      case 'style':
+        return player.plays_hand === category.value;
+      
+      case 'ranking':
+        if (category.value === 'world_no1') {
+          return player.player_rankings?.some((r: any) => r.singles_ranking === 1) || false;
+        }
+        if (category.value === 'top10') {
+          return player.player_rankings?.some((r: any) => r.singles_ranking <= 10) || false;
+        }
+        return false;
+      
+      case 'achievement':
+        return player.player_achievements?.some((a: any) => a.achievement_type === category.value) || false;
+      
+      default:
+        return false;
+    }
+  } catch {
+    return false;
+  }
+}
+
+function validateEra(player: any, era: string): boolean {
+  const turnedPro = player.turned_pro || 1990;
+  const retired = player.retired || new Date().getFullYear();
+  
+  switch (era) {
+    case '2020s': return retired >= 2020;
+    case '2010s': return turnedPro <= 2019 && retired >= 2010;
+    case '2000s': return turnedPro <= 2009 && retired >= 2000;
+    case '1990s': return turnedPro <= 1999 && retired >= 1990;
+    default: return false;
+  }
+}
+
+function getCountryName(code: string): string {
+  const names: Record<string, string> = {
+    'USA': 'USA', 'ESP': 'Spain', 'SRB': 'Serbia', 'SUI': 'Switzerland',
+    'GBR': 'Great Britain', 'FRA': 'France', 'GER': 'Germany', 'AUS': 'Australia',
+    'ITA': 'Italy', 'ARG': 'Argentina', 'RUS': 'Russia', 'CAN': 'Canada',
+    'CRO': 'Croatia', 'AUT': 'Austria', 'BEL': 'Belgium', 'NED': 'Netherlands'
+  };
+  return names[code] || code;
+}
+
+function formatAchievementLabel(achievement: string): string {
+  return achievement.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 }
