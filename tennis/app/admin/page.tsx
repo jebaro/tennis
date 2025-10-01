@@ -1,15 +1,9 @@
-// app/admin/page.tsx - SIMPLIFIED VERSION
+// app/admin/page.tsx - UPDATED VERSION
 "use client";
 
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_OR_ANON_KEY!
-);
 
 interface DatabaseStats {
   players: number;
@@ -23,18 +17,27 @@ export default function AdminPage() {
   const [message, setMessage] = useState('');
 
   const fetchStats = async () => {
+    setLoading(true);
     try {
       const response = await fetch('/api/populate-db');
       const data = await response.json();
       setStats(data);
+      setMessage('✅ Stats loaded successfully');
     } catch (error) {
       console.error('Error fetching stats:', error);
+      setMessage('❌ Failed to fetch stats');
+    } finally {
+      setLoading(false);
     }
   };
 
   const superPopulate = async () => {
+    if (!confirm('⚠️ This will REPLACE ALL existing data. Continue?')) {
+      return;
+    }
+
     setLoading(true);
-    setMessage('🚀 Starting comprehensive database population...\n\nThis will take 5-10 minutes and will:\n• Add 500+ players from SportRadar\n• Add 25+ tournaments\n• Add comprehensive achievements\n• Replace ALL existing data\n\nPlease wait...');
+    setMessage('🚀 Starting comprehensive database population...\n\nThis will take 5-10 minutes. Please wait...');
     
     try {
       const response = await fetch('/api/super-populate', { method: 'POST' });
@@ -50,20 +53,24 @@ export default function AdminPage() {
 
 ${result.summary}
 
-🎮 Your database is now ready for daily tennis grids!`);
+🎮 Database ready for tennis grids!`);
         await fetchStats();
       } else {
         setMessage(`❌ Error: ${result.error}\n${result.details || ''}`);
       }
     } catch (error) {
-      setMessage(`❌ Connection Error: ${error}`);
+      setMessage(`❌ Connection Error: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setLoading(false);
     }
   };
 
   const clearDatabase = async () => {
-    if (!confirm('⚠️ This will DELETE ALL DATA. Are you sure?')) {
+    if (!confirm('⚠️ This will DELETE ALL DATA. Are you absolutely sure?')) {
+      return;
+    }
+
+    if (!confirm('🚨 FINAL WARNING: This action cannot be undone!')) {
       return;
     }
 
@@ -71,157 +78,228 @@ ${result.summary}
     setMessage('🗑️ Clearing all database tables...');
     
     try {
-      // Call a server-side API route to clear data (since we need service role key)
       const response = await fetch('/api/clear-database', { method: 'POST' });
       const result = await response.json();
       
       if (result.success) {
         setMessage('✅ Database cleared successfully. Ready for fresh population.');
+        await fetchStats();
       } else {
-        setMessage(`❌ Clear Error: ${result.error}`);
+        setMessage(`❌ Error: ${result.error || 'Unknown error'}`);
       }
-      
-      await fetchStats();
     } catch (error) {
-      setMessage(`❌ Clear Error: ${error}`);
+      setMessage(`❌ Connection Error: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setLoading(false);
     }
   };
 
-  // Fetch stats on component mount
-  useState(() => {
-    fetchStats();
-  });
+  const testDailyQuiz = async () => {
+    setLoading(true);
+    setMessage('🧪 Testing daily quiz generation...');
+    
+    try {
+      const response = await fetch(`/api/daily-quiz?t=${Date.now()}&debug=true`);
+      const result = await response.json();
+      
+      if (result.success) {
+        const debugInfo = result.debug;
+        setMessage(`✅ Daily Quiz Generated Successfully!
+
+📊 Category Pool:
+   • ${debugInfo.categoryBreakdown.countries} countries
+   • ${debugInfo.categoryBreakdown.grandSlams} Grand Slams
+   • ${debugInfo.categoryBreakdown.masters} Masters 1000
+   • ${debugInfo.categoryBreakdown.achievements} achievement types
+   • ${debugInfo.totalCategories} total categories
+
+🎯 Selected Categories:
+   Rows: ${debugInfo.selectedRows.join(', ')}
+   Columns: ${debugInfo.selectedColumns.join(', ')}
+
+Seed: ${result.seed}`);
+      } else {
+        setMessage(`❌ Quiz generation failed: ${result.error}`);
+      }
+    } catch (error) {
+      setMessage(`❌ Error: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const checkDatabaseHealth = async () => {
+    setLoading(true);
+    setMessage('🏥 Checking database health...');
+    
+    try {
+      const [playersRes, tournamentsRes, achievementsRes] = await Promise.all([
+        fetch('/api/check-players'),
+        fetch('/api/populate-db'),
+        fetch('/api/expand-achievements')
+      ]);
+
+      const [playersData, tournamentsData, achievementsData] = await Promise.all([
+        playersRes.json(),
+        tournamentsRes.json(),
+        achievementsRes.json()
+      ]);
+
+      setMessage(`🏥 Database Health Check:
+
+👥 Players: ${playersData.totalPlayers || 0}
+🏆 Tournaments: ${tournamentsData.tournaments || 0}
+🏅 Achievements: ${achievementsData.achievements || 0}
+
+${playersData.totalPlayers > 200 ? '✅' : '⚠️'} Players database ${playersData.totalPlayers > 200 ? 'looks good' : 'needs more data'}
+${tournamentsData.tournaments > 10 ? '✅' : '⚠️'} Tournaments ${tournamentsData.tournaments > 10 ? 'sufficient' : 'need more tournaments'}
+${achievementsData.achievements > 100 ? '✅' : '⚠️'} Achievements ${achievementsData.achievements > 100 ? 'well populated' : 'need more achievements'}`);
+
+      setStats({
+        players: playersData.totalPlayers || 0,
+        tournaments: tournamentsData.tournaments || 0,
+        achievements: achievementsData.achievements || 0
+      });
+    } catch (error) {
+      setMessage(`❌ Health check failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-background p-8">
-      <div className="max-w-4xl mx-auto">
-        <h1 className="text-3xl font-bold mb-8">🎾 TennisGrids Admin</h1>
-        
-        {/* Database Stats */}
-        <Card className="mb-8">
+    <div className="container mx-auto p-6 max-w-4xl">
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold mb-2">🎾 Tennis Grids Admin</h1>
+        <p className="text-muted-foreground">
+          Database management and testing tools
+        </p>
+      </div>
+
+      {/* Stats Card */}
+      {stats && (
+        <Card className="mb-6">
           <CardHeader>
-            <CardTitle>📊 Database Statistics</CardTitle>
+            <CardTitle>📊 Current Database Stats</CardTitle>
           </CardHeader>
           <CardContent>
-            {stats ? (
-              <div className="grid grid-cols-3 gap-4 text-center">
-                <div>
-                  <div className="text-3xl font-bold text-blue-600">{stats.players}</div>
-                  <div className="text-sm text-muted-foreground">Players</div>
-                </div>
-                <div>
-                  <div className="text-3xl font-bold text-green-600">{stats.tournaments}</div>
-                  <div className="text-sm text-muted-foreground">Tournaments</div>
-                </div>
-                <div>
-                  <div className="text-3xl font-bold text-purple-600">{stats.achievements}</div>
-                  <div className="text-sm text-muted-foreground">Achievements</div>
-                </div>
+            <div className="grid grid-cols-3 gap-4">
+              <div className="text-center">
+                <div className="text-3xl font-bold text-blue-600">{stats.players}</div>
+                <div className="text-sm text-muted-foreground">Players</div>
               </div>
-            ) : (
-              <div className="text-center text-muted-foreground">Loading stats...</div>
-            )}
-            
-            <Button 
-              onClick={fetchStats}
-              variant="outline"
-              size="sm"
-              className="w-full mt-4"
-            >
-              🔄 Refresh Stats
-            </Button>
-          </CardContent>
-        </Card>
-
-        {/* Main Actions */}
-        <Card className="mb-8">
-          <CardHeader>
-            <CardTitle>🎮 Database Population</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            
-            <Button 
-              onClick={superPopulate}
-              disabled={loading}
-              size="lg"
-              className="w-full h-16 text-lg"
-            >
-              {loading ? '⏳ Populating Database...' : '🚀 SUPER POPULATE (500+ Players)'}
-            </Button>
-            
-            <div className="text-sm text-muted-foreground bg-muted/50 rounded p-4">
-              <p className="font-medium mb-2">🎯 This ONE button will:</p>
-              <ul className="space-y-1 text-xs">
-                <li>✅ Fetch 500+ players from SportRadar API</li>
-                <li>✅ Add 25+ major tournaments (Grand Slams, Masters, etc.)</li>
-                <li>✅ Add comprehensive historical achievements</li>
-                <li>✅ Add current rankings and detailed player profiles</li>
-                <li>✅ Replace your current 62 players with production-ready data</li>
-              </ul>
-              <p className="text-orange-600 dark:text-orange-400 text-xs mt-2">
-                ⚠️ Takes 5-10 minutes. Requires SportRadar API key.
-              </p>
+              <div className="text-center">
+                <div className="text-3xl font-bold text-green-600">{stats.tournaments}</div>
+                <div className="text-sm text-muted-foreground">Tournaments</div>
+              </div>
+              <div className="text-center">
+                <div className="text-3xl font-bold text-purple-600">{stats.achievements}</div>
+                <div className="text-sm text-muted-foreground">Achievements</div>
+              </div>
             </div>
-
-            <Button 
-              onClick={clearDatabase}
-              disabled={loading}
-              variant="destructive"
-              size="sm"
-              className="w-full"
-            >
-              {loading ? 'Clearing...' : '🗑️ Clear All Data (Start Over)'}
-            </Button>
-            
           </CardContent>
         </Card>
+      )}
 
-        {/* Status Messages */}
-        {message && (
-          <Card className="mb-8">
-            <CardContent className="pt-6">
-              <pre className="text-sm whitespace-pre-wrap">{message}</pre>
-            </CardContent>
-          </Card>
-        )}
+      {/* Actions */}
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>🛠️ Admin Actions</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Button 
+            onClick={checkDatabaseHealth} 
+            disabled={loading}
+            className="w-full"
+            variant="outline"
+          >
+            🏥 Check Database Health
+          </Button>
 
-        {/* Game Ready Status */}
+          <Button 
+            onClick={testDailyQuiz} 
+            disabled={loading}
+            className="w-full"
+            variant="outline"
+          >
+            🧪 Test Daily Quiz Generation
+          </Button>
+
+          <Button 
+            onClick={superPopulate} 
+            disabled={loading}
+            className="w-full"
+          >
+            🚀 Super Populate Database
+          </Button>
+
+          <Button 
+            onClick={clearDatabase} 
+            disabled={loading}
+            className="w-full"
+            variant="destructive"
+          >
+            🗑️ Clear All Data
+          </Button>
+
+          <Button 
+            onClick={fetchStats} 
+            disabled={loading}
+            className="w-full"
+            variant="secondary"
+          >
+            🔄 Refresh Stats
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Message Display */}
+      {message && (
         <Card>
           <CardHeader>
-            <CardTitle>🎲 Game Readiness</CardTitle>
+            <CardTitle>📝 Output</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <span>Minimum Players (200+):</span>
-                <span className={stats && stats.players >= 200 ? "text-green-600 font-bold" : "text-red-600"}>
-                  {stats && stats.players >= 200 ? "✅ Ready" : `❌ Need ${200 - (stats?.players || 0)} more`}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>Tournaments (20+):</span>
-                <span className={stats && stats.tournaments >= 20 ? "text-green-600 font-bold" : "text-red-600"}>
-                  {stats && stats.tournaments >= 20 ? "✅ Ready" : `❌ Need ${20 - (stats?.tournaments || 0)} more`}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>Achievements (100+):</span>
-                <span className={stats && stats.achievements >= 100 ? "text-green-600 font-bold" : "text-red-600"}>
-                  {stats && stats.achievements >= 100 ? "✅ Ready" : `❌ Need ${100 - (stats?.achievements || 0)} more`}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span>Overall Game Status:</span>
-                <span className={stats && stats.players >= 200 && stats.tournaments >= 20 && stats.achievements >= 100 ? "text-green-600 font-bold" : "text-yellow-600"}>
-                  {stats && stats.players >= 200 && stats.tournaments >= 20 && stats.achievements >= 100 ? "🎮 READY FOR DAILY GRIDS!" : "⏳ Needs Super Populate"}
-                </span>
-              </div>
-            </div>
+            <pre className="whitespace-pre-wrap text-sm bg-muted p-4 rounded-lg overflow-x-auto">
+              {message}
+            </pre>
           </CardContent>
         </Card>
-      </div>
+      )}
+
+      {/* Instructions */}
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle>💡 Quick Start Guide</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3 text-sm">
+            <div>
+              <strong>1. First Time Setup:</strong>
+              <ul className="list-disc list-inside ml-4 mt-1 space-y-1">
+                <li>Click "Super Populate Database" to load 500+ players and tournaments</li>
+                <li>Wait 5-10 minutes for completion</li>
+                <li>Database will be ready for daily grids</li>
+              </ul>
+            </div>
+            <div>
+              <strong>2. Testing:</strong>
+              <ul className="list-disc list-inside ml-4 mt-1 space-y-1">
+                <li>Use "Test Daily Quiz" to verify quiz generation</li>
+                <li>Use "Check Database Health" to verify data integrity</li>
+                <li>Visit <a href="/debug-quiz" className="text-blue-600 hover:underline">/debug-quiz</a> to test the full grid interface</li>
+              </ul>
+            </div>
+            <div>
+              <strong>3. Maintenance:</strong>
+              <ul className="list-disc list-inside ml-4 mt-1 space-y-1">
+                <li>"Clear All Data" removes everything (use before re-populating)</li>
+                <li>"Refresh Stats" updates the current database counts</li>
+              </ul>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
